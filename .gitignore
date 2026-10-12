@@ -1,0 +1,27 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Data (large, not committed — see data/README.md for how to obtain)
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Env / secrets
+.env
+kaggle.json
+
+# AI assistant config / notes (not part of the project deliverable)
+CLAUDE.md
+SESSION_HANDOFF.md
+.claude/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Airflow / Docker runtime (added when those services are set up)
+airflow/logs/
+airflow/plugins/__pycache__/
