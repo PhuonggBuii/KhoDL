@@ -1,0 +1,11 @@
+timestamp_utc,source,status,record_count,output_path,error_message
+2026-10-22T17:51:50+00:00,file,success,1067371,P:\Downloads\Study\KhoDL\datalake\raw\file\2026-10-22\transactions_file_source.csv,
+2026-10-22T17:52:47+00:00,database,success,5942,P:\Downloads\Study\KhoDL\datalake\raw\database\2026-10-22\customers_from_db.csv,
+2026-10-22T17:53:47+00:00,database,success,5942,P:\Downloads\Study\KhoDL\datalake\raw\database\2026-10-22\customers_from_db.csv,
+2026-10-22T17:53:52+00:00,api,success,5304,P:\Downloads\Study\KhoDL\datalake\raw\api\2026-10-22\products.json,
+2026-10-22T17:54:20+00:00,file,failed,,P:\Downloads\Study\KhoDL\datalake\raw\file\2026-10-22\transactions_file_source.csv,Khong tim thay dataset tai data\raw\khong_ton_tai.xlsx
+2026-10-22T17:54:27+00:00,api,failed,,P:\Downloads\Study\KhoDL\datalake\raw\api\2026-10-22\products.json,Remote end closed connection without response
+2026-10-22T17:55:28+00:00,api,success,5304,P:\Downloads\Study\KhoDL\datalake\raw\api\2026-10-22\products.json,
+2026-10-22T17:56:26+00:00,file,success,1067371,P:\Downloads\Study\KhoDL\datalake\raw\file\2026-10-22\transactions_file_source.csv,
+2026-10-22T17:57:11+00:00,database,success,5942,P:\Downloads\Study\KhoDL\datalake\raw\database\2026-10-22\customers_from_db.csv,
+2026-10-23T13:31:49+00:00,api,success,5304,P:\Downloads\Study\KhoDL\datalake\raw\api\2026-10-23\products.json,

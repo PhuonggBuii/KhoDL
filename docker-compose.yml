@@ -1,0 +1,182 @@
+name: khodl
+
+networks:
+  khodl_net:
+    name: khodl_net
+
+volumes:
+  pg_source_data:
+  pg_dw_data:
+  pg_airflow_data:
+  superset_home:
+
+x-airflow-common: &airflow-common
+  image: apache/airflow:2.10.5-python3.12
+  environment:
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${PG_AIRFLOW_USER}:${PG_AIRFLOW_PASSWORD}@postgres-airflow/${PG_AIRFLOW_DB}
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY}
+    AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY}
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    _AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER}
+    _AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./airflow/logs:/opt/airflow/logs
+    - ./airflow/plugins:/opt/airflow/plugins
+  networks:
+    - khodl_net
+  depends_on:
+    postgres-airflow:
+      condition: service_healthy
+
+services:
+  postgres-source:
+    image: postgres:16-alpine
+    container_name: khodl-postgres-source
+    environment:
+      POSTGRES_DB: ${PG_SOURCE_DB}
+      POSTGRES_USER: ${PG_SOURCE_USER}
+      POSTGRES_PASSWORD: ${PG_SOURCE_PASSWORD}
+    ports:
+      - "${PG_SOURCE_PORT}:5432"
+    volumes:
+      - pg_source_data:/var/lib/postgresql/data
+    networks: [khodl_net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_SOURCE_USER} -d ${PG_SOURCE_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  postgres-dw:
+    image: postgres:16-alpine
+    container_name: khodl-postgres-dw
+    environment:
+      POSTGRES_DB: ${PG_DW_DB}
+      POSTGRES_USER: ${PG_DW_USER}
+      POSTGRES_PASSWORD: ${PG_DW_PASSWORD}
+    ports:
+      - "${PG_DW_PORT}:5432"
+    volumes:
+      - pg_dw_data:/var/lib/postgresql/data
+    networks: [khodl_net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_DW_USER} -d ${PG_DW_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  postgres-airflow:
+    image: postgres:16-alpine
+    container_name: khodl-postgres-airflow
+    # Metadata DB rieng cho Airflow — khong expose ra host, chi dung trong mang khodl_net.
+    environment:
+      POSTGRES_DB: ${PG_AIRFLOW_DB}
+      POSTGRES_USER: ${PG_AIRFLOW_USER}
+      POSTGRES_PASSWORD: ${PG_AIRFLOW_PASSWORD}
+    volumes:
+      - pg_airflow_data:/var/lib/postgresql/data
+    networks: [khodl_net]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_AIRFLOW_USER} -d ${PG_AIRFLOW_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    container_name: khodl-airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate
+        airflow users create --username "$${_AIRFLOW_ADMIN_USER}" --password "$${_AIRFLOW_ADMIN_PASSWORD}" \
+          --firstname Admin --lastname User --role Admin --email admin@example.com || true
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: khodl-airflow-webserver
+    command: webserver
+    ports:
+      - "${AIRFLOW_WEBSERVER_PORT}:8080"
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: khodl-airflow-scheduler
+    command: scheduler
+    depends_on:
+      postgres-airflow:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "airflow jobs check --job-type SchedulerJob --hostname \"$$(hostname)\""]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
+
+  fastapi:
+    build: ./api
+    container_name: khodl-fastapi
+    ports:
+      - "${FASTAPI_PORT}:8000"
+    volumes:
+      - ./data:/app/data:ro
+    networks: [khodl_net]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  superset:
+    image: apache/superset:4.1.1
+    container_name: khodl-superset
+    environment:
+      SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY}
+      SUPERSET_CONFIG_PATH: /app/pythonpath/superset_config.py
+      _SUPERSET_ADMIN_USER: ${SUPERSET_ADMIN_USER}
+      _SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD}
+    volumes:
+      - ./superset/superset_config.py:/app/pythonpath/superset_config.py
+      - superset_home:/app/superset_home
+    ports:
+      - "${SUPERSET_PORT}:8088"
+    networks: [khodl_net]
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        superset db upgrade
+        superset fab create-admin --username "$${_SUPERSET_ADMIN_USER}" --password "$${_SUPERSET_ADMIN_PASSWORD}" \
+          --firstname Admin --lastname User --email admin@example.com || true
+        superset init
+        gunicorn --bind 0.0.0.0:8088 --workers 2 --timeout 120 "superset.app:create_app()"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
+    restart: unless-stopped

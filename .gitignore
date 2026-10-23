@@ -25,3 +25,10 @@ Thumbs.db
 # Airflow / Docker runtime (added when those services are set up)
 airflow/logs/
 airflow/plugins/__pycache__/
+
+# Data Lake (raw/processed co the tao lai bang scripts/ingest/*.py — xem PROJECT_CONTEXT.md)
+datalake/raw/*
+datalake/processed/*
+!datalake/raw/.gitkeep
+!datalake/processed/.gitkeep
+# metadata/ingest_log.csv DUOC commit lam bang chung kiem thu Phase 1.5
