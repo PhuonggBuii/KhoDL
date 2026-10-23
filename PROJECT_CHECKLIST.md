@@ -4,10 +4,16 @@
 > Trạng thái file: Kế hoạch & checklist, đã đối chiếu với code thực tế.
 > **Đã có code**: khảo sát dữ liệu (0.1), RFM/K-Means (5.1–5.4) chạy thật có kết quả kiểm
 > chứng, **Phase 1 (Data Lake & 3 nguồn ingest) đã hoàn thành và kiểm thử thật** (API/File/
-> Database + Data Lake + ingest log — xem `scripts/ingest/`). **Hạ tầng Docker Compose (0.2)
-> đã dựng và kiểm thử healthy trên 1 máy** (Postgres×3, Airflow, FastAPI, Superset — xem
-> `docker-compose.yml`), còn thiếu xác nhận của các thành viên khác. **Phase 2, 3, 4, 6 (ETL
-> Airflow/DW/OLAP/dashboard) chưa bắt đầu.** Chi tiết đối chiếu:
+> Database + Data Lake + ingest log — xem `scripts/ingest/`). **Phase 3.1+3.2 (Star Schema +
+> DDL trên PostgreSQL DW) đã có và kiểm thử thật** (5 bảng, PK/FK/CHECK đúng thiết kế, chạy
+> lại an toàn — xem `sql/001_create_star_schema.sql`, `docs/03_star_schema.md`), **DW vẫn
+> rỗng dữ liệu nghiệp vụ** (đúng phạm vi Phase 3.1/3.2, chưa làm 3.3/Phase 2 Load). **Hạ tầng
+> Docker Compose (0.2) đã dựng và kiểm thử healthy trên 1 máy** (Postgres×3, Airflow, FastAPI,
+> Superset), còn thiếu xác nhận của các thành viên khác. **Toàn bộ cụm ETL (Phase 2.1–2.5 +
+> 3.3) đã chạy thành công đầu-cuối thật qua DAG `retail_online_ii_etl`** (Extract → Transform
+> → Load → Validate, tất cả `SUCCESS` trong 1 lần chạy qua scheduler, `fact_sales = 1,003,670`
+> dòng, mọi kiểm tra Phase 3.3 PASS). **Phase 4 (OLAP), 6 (dashboard), 5.5 (nạp cluster vào
+> DW) chưa bắt đầu.** Chi tiết đối chiếu:
 > [`docs/PROJECT_GAP_ANALYSIS.md`](docs/PROJECT_GAP_ANALYSIS.md),
 > [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) (tài liệu bàn giao đầy đủ).
 
@@ -235,69 +241,212 @@ Ký hiệu trạng thái: `[ ]` Chưa bắt đầu · `[~]` Đang làm · `[x]` 
 
 ### Phase 2 — ETL với Airflow
 
-- [ ] **2.1 Thiết kế DAG tổng thể**
+- [~] **2.1 Thiết kế DAG tổng thể**
   - Phụ trách: TV1
   - Công cụ: Airflow
-  - Đầu vào: Kết quả Phase 1
-  - Đầu ra: Sơ đồ DAG (task Extract API/File/DB → Transform → Load) — có thể vẽ tay/draw.io trước khi code
-  - Tiêu chí nghiệm thu: Sơ đồ được TV2 review và xác nhận khớp với thiết kế Star Schema (Phase 3)
+  - Đầu vào: Kết quả Phase 1 (`scripts/ingest/*.py`), Star Schema Phase 3.1/3.2
+  - Đầu ra: [`airflow/dags/retail_etl_dag.py`](airflow/dags/retail_etl_dag.py) — DAG
+    `retail_online_ii_etl`, luồng `start → extract (3 task song song: extract_api,
+    extract_file, extract_database) → transform → load → validate → end`. `extract`
+    gọi lại `scripts/ingest/*.py::run()` (mount `./scripts:/opt/airflow/scripts:ro` —
+    sửa `docker-compose.yml`); `transform`/`load` là khung TODO chủ động báo `SKIP`
+    (không ghi dữ liệu); `validate` kết nối thật tới `postgres-dw`, đếm `fact_sales`,
+    không báo thành công giả. `schedule=None`, `catchup=False`, DAG mặc định `paused`.
+  - **Đã kiểm thử thật trên `khodl-airflow-webserver` (2026-10-23):**
+    - `airflow dags list-import-errors` → "No data found" (không lỗi parse/import).
+    - `airflow dags list` → DAG xuất hiện, `is_paused=True`.
+    - `airflow tasks list --tree` → đúng cấu trúc `start → extract.{api,file,database}
+      → transform → load → validate → end`.
+    - `airflow dags details` → `schedule_interval: None`, `timetable_description:
+      Never, external triggers only` — xác nhận không tự chạy backfill.
+    - `airflow tasks test ... transform` / `... load` → cả hai `Marking task as
+      SKIPPED`, log rõ lý do, **không ghi dữ liệu nào**.
+    - `airflow tasks test ... validate` → kết nối thật `postgres-dw`, in
+      `fact_sales hiện có 0 dòng` (đúng kỳ vọng), rồi `SKIPPED` — không báo thành
+      công giả.
+    - (Tại thời điểm Phase 2.1, `extract.extract_api` lỗi `Connection refused` tới
+      `localhost:8000`, `extract.extract_file`/`extract.extract_database` không tìm thấy
+      dataset — **đã sửa xong ở Phase 2.2**, xem mục 2.2 bên dưới: cả 3 task đã SUCCESS thật.)
+    - Xác nhận container Docker của dự án khác (`daugiahtpt-*`) và port 8080 không bị
+      ảnh hưởng trong lượt kiểm thử Phase 2.1.
+  - Tiêu chí nghiệm thu: **Thiết kế DAG + kiểm thử cấu trúc/parse/no-backfill: Đạt.**
+    Tiêu chí gốc "TV2 review và xác nhận" — **chưa có xác nhận nhóm** → để `[~]`, không `[x]`.
+    (Extract nay đã chạy thật — xem 2.2 — nhưng 2.1 vẫn `[~]` vì thiếu bước review của TV2.)
   - Phụ thuộc: 1.5, 3.1 (schema phải thống nhất trước khi code Load task)
 
-- [ ] **2.2 Task Extract (3 nguồn)**
+- [x] **2.2 Task Extract (3 nguồn)**
   - Phụ trách: TV1
   - Công cụ: Airflow PythonOperator
   - Đầu vào: API FastAPI, file nguồn, Postgres nguồn
-  - Đầu ra: Dữ liệu thô ghi vào `raw/` theo đúng quy ước 1.4
-  - Tiêu chí nghiệm thu: Chạy DAG, 3 task Extract SUCCESS trên Airflow UI, file xuất hiện đúng thư mục
+  - Đầu ra: Dữ liệu thô ghi vào `raw/` theo đúng quy ước 1.4. Đã sửa
+    [`scripts/ingest/ingest_api.py`](scripts/ingest/ingest_api.py) và
+    [`ingest_database.py`](scripts/ingest/ingest_database.py): hostname tham số hóa qua
+    `FASTAPI_HOST`/`PG_SOURCE_HOST` (mặc định `"localhost"` — không đổi hành vi khi chạy trên
+    host như Phase 1). `docker-compose.yml` (`x-airflow-common`) đặt `FASTAPI_HOST=fastapi`,
+    `PG_SOURCE_HOST=postgres-source`, thêm mount mirror `./data:/opt/airflow/data:ro`,
+    `./datalake:/opt/airflow/datalake` (đọc/ghi), `./.env:/opt/airflow/.env:ro` — giữ nguyên
+    cấu trúc tương đối để `scripts/ingest/common.py` tính đúng đường dẫn mà **không cần sửa
+    code tính đường dẫn**. Thêm `_PIP_ADDITIONAL_REQUIREMENTS: "openpyxl==3.1.5"` (image
+    Airflow gốc thiếu `openpyxl`, `pandas`/`psycopg2` đã có sẵn).
+  - **Đã kiểm thử thật (2026-10-23), cả 3 Extract task SUCCESS trong Airflow:**
+    - `airflow tasks test ... extract.extract_api` → SUCCESS, gọi
+      `http://fastapi:8000/products` thành công, nhận **5,304** sản phẩm.
+    - `airflow tasks test ... extract.extract_file` → SUCCESS, đọc **1,067,371** dòng (khớp
+      100% khảo sát 0.1), ghi vào `/opt/airflow/datalake/raw/file/2026-10-23/...`.
+    - `airflow tasks test ... extract.extract_database` → SUCCESS, trích **5,942** khách
+      hàng, nạp vào `postgres-source.source_customers` (đã verify lại bằng `psql` trực tiếp từ
+      host: `count=5942`, `count(DISTINCT customer_id)=5942` — không trùng).
+    - **Chạy DAG đầy đủ qua scheduler** (`airflow dags trigger` + tạm `unpause`): `start` →
+      3 `extract.*` → `transform`/`load`/`validate` (SKIPPED đúng thiết kế) → `end`, tất cả
+      SUCCESS/SKIPPED đúng kỳ vọng, không có task nào FAILED. Đã `pause` lại DAG sau khi test.
+    - **Xác nhận output thật trên HOST** (không chỉ trong container): `find
+      datalake/raw -newer ...` thấy đủ 3 file mới ngày 2026-10-23; `datalake/metadata/
+      ingest_log.csv` trên host có thêm các dòng `success` thật (không có dòng `failed`/giả).
+    - **Xác nhận dữ liệu nguồn không đổi:** `data/raw/online_retail_II.xlsx` giữ nguyên kích
+      thước 45,622,278 byte, mtime gốc (Nov 20 2019) không đổi (file mount `:ro`).
+    - **Không ảnh hưởng project khác:** `daugiahtpt-*`/port 8080 kiểm tra lại vẫn bình thường
+      sau khi recreate container Airflow.
+  - Tiêu chí nghiệm thu: **Đạt** — cả 3 Extract task SUCCESS thật (test riêng + DAG run đầy đủ
+    qua scheduler), file xuất hiện đúng thư mục trên host.
   - Phụ thuộc: 2.1
 
-- [ ] **2.3 Task Transform**
+- [x] **2.3 Task Transform**
   - Phụ trách: TV1 (phối hợp TV2 để khớp schema đích)
   - Công cụ: Pandas trong Airflow task
-  - Đầu vào: `raw/*`
-  - Đầu ra: Dữ liệu sạch trong `processed/` (đã join 3 nguồn theo khóa, tính Revenue = Quantity * Price, loại/tách đơn hủy, chuẩn hóa ngày)
-  - Tiêu chí nghiệm thu: So sánh số dòng trước/sau transform có log rõ ràng (bao nhiêu dòng bị loại và lý do)
+  - Đầu vào: dataset gốc (xem ghi chú nguồn dưới) + xác thực lineage `raw/*`
+  - Đầu ra: [`scripts/transform/transform.py`](scripts/transform/transform.py) →
+    `datalake/processed/<ngày>/{dim_date,dim_customer,dim_product,dim_country,fact_sales}.csv`.
+    **Nguồn dữ liệu đọc trực tiếp `data/raw/online_retail_II.xlsx`** (không join lại 3
+    "nguồn" mô phỏng trong Data Lake) — lý do: nguồn "File" (1.2) chỉ có 5 cột giao dịch,
+    không có Customer ID/Country; nguồn "Database" (1.3) chỉ có Customer ID+Country **đã khử
+    trùng theo khách hàng** (không còn liên kết Invoice) → không có khóa chung để join lại
+    thành 1 dòng giao dịch đầy đủ. Đây là hạn chế đã biết của kiến trúc 3-nguồn-mô-phỏng (ghi
+    rõ trong code + `docs/03_star_schema.md` mục 6, `docs/PROJECT_GAP_ANALYSIS.md`). Transform
+    vẫn **xác thực** `raw/file`, `raw/database`, `raw/api` tồn tại và số dòng khớp trước khi
+    tính toán trên dataset gốc.
+  - **Đã kiểm thử thật (2026-10-23), áp dụng đúng 5 quy tắc theo thứ tự, log số dòng từng
+    bước** (chạy lại qua `uv run` trên host, qua `airflow tasks test`, và qua DAG run đầy đủ —
+    kết quả giống nhau cả 3 lần):
+    - Raw: 1,067,371 dòng → bỏ trùng lặp: **-34,335** → loại đơn hủy (`Invoice` bắt đầu `C`):
+      **-19,104** → loại `Quantity<=0` hoặc `Price<=0`: **-6,019** → loại mã phi sản phẩm:
+      **-4,243** → **Giữ 226,813 dòng thiếu Customer ID** (không loại) → **kết quả: 1,003,670
+      dòng (94.0%)**.
+    - Dimension: `dim_date=604`, `dim_customer=5,853`, `dim_product=4,905`, `dim_country=43`.
+    - Description đại diện: mode() + trim/gộp khoảng trắng (đã kiểm chứng tie-break alphabet
+      đúng quy tắc #4 ở `docs/03_star_schema.md`).
+  - Tiêu chí nghiệm thu: **Đạt** — log rõ số dòng loại theo từng quy tắc, có bằng chứng chạy
+    thật 3 lần khớp nhau.
   - Phụ thuộc: 2.2, 0.3
 
-- [ ] **2.4 Task Load vào PostgreSQL DW**
+- [x] **2.4 Task Load vào PostgreSQL DW**
   - Phụ trách: TV1 (phối hợp TV2)
-  - Công cụ: Airflow + psycopg2/SQLAlchemy
-  - Đầu vào: `processed/*`
-  - Đầu ra: Dữ liệu nạp vào Fact/Dim tables theo Star Schema (3.1)
-  - Tiêu chí nghiệm thu: Query `SELECT count(*)` ở DW khớp số dòng processed; không có dòng trùng khi chạy lại DAG
+  - Công cụ: Airflow + psycopg2
+  - Đầu vào: `datalake/processed/<ngày>/*`
+  - Đầu ra: [`scripts/load/load.py`](scripts/load/load.py) — nạp đúng thứ tự `dim_date →
+    dim_customer → dim_product → dim_country → fact_sales`; dimension UPSERT theo khóa tự
+    nhiên (`ON CONFLICT ... DO NOTHING`/`DO UPDATE`), `fact_sales` TRUNCATE + INSERT lại toàn
+    bộ (chỉ bảng này, không đụng dimension/DW ở mức database/volume). Surrogate key tra cứu
+    qua `pandas.merge`/`map`, `customer_key` cho phép `NULL`.
+  - **Đã kiểm thử thật:** chạy trên host 2 lần liên tiếp + qua `airflow tasks test` + qua DAG
+    run đầy đủ → `fact_sales = 1,003,670` dòng cả 4 lần (không tăng/giảm). `SELECT count(*)`
+    trực tiếp từ `psql` khớp đúng số dòng `processed/fact_sales.csv`. Phát hiện + sửa 1 lỗi
+    thật khi chạy trong container: `PG_DW_PORT` (.env) là port publish ra host (5433), nhưng
+    kết nối qua tên service nội bộ `postgres-dw` phải dùng port container thật (5432) — thêm
+    `PG_DW_PORT_INTERNAL` để tách biệt 2 port này.
+  - Tiêu chí nghiệm thu: **Đạt** — `count(*)` khớp, không trùng khi chạy lại.
   - Phụ thuộc: 2.3, 3.1
 
-- [ ] **2.5 Cơ chế chạy lại không trùng (idempotency ở mức cần thiết)**
+- [x] **2.5 Cơ chế chạy lại không trùng (idempotency ở mức cần thiết)**
   - Phụ trách: TV1
-  - Công cụ: Airflow (DAG param ngày chạy / execution_date), SQL (upsert hoặc xóa-nạp lại theo batch/ngày)
+  - Công cụ: UPSERT (dimension) + TRUNCATE/INSERT toàn bộ (`fact_sales`, không phải theo
+    batch_id/ngày vì pipeline hiện xử lý toàn bộ lịch sử 1 lần, không incremental theo ngày)
   - Đầu vào: DAG đã chạy ở 2.4
-  - Đầu ra: Quy tắc đơn giản: mỗi lần Load xóa dữ liệu cùng batch_id/ngày rồi nạp lại (không cần CDC phức tạp)
-  - Tiêu chí nghiệm thu: Chạy DAG 2 lần liên tiếp với cùng input, số dòng trong Fact_Sales không tăng gấp đôi
+  - Đầu ra: Đã áp dụng đúng chiến lược đề xuất sẵn trong checklist này ("xóa-nạp lại theo
+    batch"), áp dụng ở mức bảng `fact_sales` (không truncate toàn bộ DW, không đụng dimension).
+  - **Đã kiểm thử thật:** chạy `load.py` 2 lần liên tiếp trên host (trước khi sửa DAG) +
+    chạy lại qua Airflow (`tasks test` + DAG run đầy đủ) = tổng **4 lần chạy Load** với cùng
+    input, `fact_sales` luôn = **1,003,670** dòng, không tăng gấp đôi hay trùng. Dimension
+    (`dim_customer=5,853` v.v.) cũng không đổi qua các lần chạy (UPSERT đúng, không tạo dòng
+    trùng theo khóa tự nhiên).
+  - Tiêu chí nghiệm thu: **Đạt** — chạy lại nhiều lần, số dòng `fact_sales` không tăng.
   - Phụ thuộc: 2.4
 
 ### Phase 3 — Data Warehouse (Star Schema)
 
-- [ ] **3.1 Thiết kế Star Schema**
+- [~] **3.1 Thiết kế Star Schema**
   - Phụ trách: TV2 (chủ trì, phối hợp TV1)
   - Đầu vào: Kết quả khảo sát 0.1, quy tắc 0.3
-  - Đầu ra: Tài liệu schema: `Fact_Sales` (grain: 1 dòng = 1 dòng hàng trong 1 hóa đơn; khóa ngoại tới Dim_Date, Dim_Customer, Dim_Product, Dim_Country; measures: Quantity, UnitPrice, Revenue), `Dim_Date`, `Dim_Customer`, `Dim_Product`, `Dim_Country` (chỉ tạo dimension khi có dữ liệu/nhu cầu thực)
-  - Tiêu chí nghiệm thu: Sơ đồ ERD + DDL script (CREATE TABLE) được cả 3 thành viên xác nhận trước khi TV1 code Load task
+  - Đầu ra: [`docs/03_star_schema.md`](docs/03_star_schema.md) — `fact_sales` (grain: 1 dòng = 1
+    dòng hàng trong 1 hóa đơn; FK tới `dim_date`, `dim_customer` (nullable), `dim_product`,
+    `dim_country`; measures `quantity`, `unit_price`, `revenue` tính sẵn bằng cột
+    `GENERATED`), `dim_date`, `dim_customer`, `dim_product`, `dim_country` + sơ đồ ERD
+    (Mermaid). Thiết kế dựa trên khảo sát thực tế lại dataset trong lượt này (null count,
+    max length, phạm vi giá trị — không suy đoán).
+  - **Đã kiểm thử/xác minh (2026-10-23):** xác nhận thực tế có 42,638 cặp `(Invoice,
+    StockCode)` xuất hiện >1 dòng → cần surrogate key riêng cho fact; `Quantity` không bao giờ
+    = 0, `Price` âm chỉ 5 dòng → làm căn cứ cho các `CHECK` constraint ở 3.2.
+  - Tiêu chí nghiệm thu: **Nội dung kỹ thuật (ERD + DDL) đã có, đã tự kiểm thử DDL chạy đúng
+    (xem 3.2)**, nhưng tiêu chí gốc yêu cầu "cả 3 thành viên xác nhận trước khi code Load" —
+    **chưa có xác nhận nhóm**, nên để `[~]`. 5 quyết định thiết kế (dòng thiếu Customer ID →
+    giữ `NULL` trong fact, loại khỏi RFM; đơn hủy → loại khỏi fact; không `dim_time`; cách chọn
+    `description` đại diện; `Country` theo dòng giao dịch) **đã có đề xuất triển khai cụ thể**
+    ở `docs/03_star_schema.md` mục 6 (cập nhật Phase 2.1, 2026-10-23) — vẫn cần nhóm xem
+    xét/nghiệm thu trước khi coi là chính thức.
   - Phụ thuộc: 0.3
 
-- [ ] **3.2 Tạo DDL trên PostgreSQL DW**
+- [x] **3.2 Tạo DDL trên PostgreSQL DW**
   - Phụ trách: TV2
   - Công cụ: PostgreSQL, SQL script
   - Đầu vào: 3.1
-  - Đầu ra: Script `.sql` tạo toàn bộ bảng Fact/Dim + ràng buộc khóa chính/ngoại
-  - Tiêu chí nghiệm thu: Chạy script không lỗi, `\dt` liệt kê đủ bảng
+  - Đầu ra: [`sql/001_create_star_schema.sql`](sql/001_create_star_schema.sql) — tạo đủ 5
+    bảng, PK (`BIGINT GENERATED ALWAYS AS IDENTITY`), FK, `UNIQUE`, `CHECK`, index, toàn bộ
+    dùng `CREATE TABLE/INDEX IF NOT EXISTS` (an toàn chạy lại, không `DROP` gì).
+  - **Đã kiểm thử thật trên `khodl-postgres-dw` (db `retail_dw`, 2026-10-23):**
+    - Chạy DDL lần 1: `CREATE TABLE`/`COMMENT`/`CREATE INDEX` thành công, không lỗi.
+    - `\dt` → đủ 5 bảng (`dim_date, dim_customer, dim_product, dim_country, fact_sales`).
+    - `\d+ fact_sales`, `\d dim_*` → xác nhận đúng PK/FK/CHECK/kiểu dữ liệu `NUMERIC(10,2)`/
+      `NUMERIC(14,2)` cho `unit_price`/`revenue` (không dùng FLOAT).
+    - **Chạy lại DDL lần 2** → chỉ in `NOTICE: ... already exists, skipping`, exit code 0,
+      vẫn đúng 5 bảng — xác nhận an toàn khi chạy lại.
+    - **Test ràng buộc thật trong 1 transaction rồi `ROLLBACK`** (không để lại dữ liệu): insert
+      đủ 4 dimension + 1 fact row hợp lệ → `revenue` tự tính đúng `6 × 2.55 = 15.30`; insert
+      `quantity=0` → bị `CHECK` chặn đúng như thiết kế; insert `product_key` không tồn tại →
+      bị FK chặn đúng; insert `customer_key = NULL` → được chấp nhận, `revenue` vẫn tính đúng.
+      Sau `ROLLBACK`, xác nhận `dim_date`/`fact_sales` vẫn **0 dòng** — DW không bị nạp dữ liệu
+      test.
+  - Tiêu chí nghiệm thu: **Đạt** (`\dt` đủ bảng, chạy không lỗi, chạy lại an toàn — có bằng chứng thật)
   - Phụ thuộc: 3.1
 
-- [ ] **3.3 Xác thực dữ liệu sau khi nạp lần đầu**
+- [x] **3.3 Xác thực dữ liệu sau khi nạp lần đầu**
   - Phụ trách: TV2 (phối hợp TV1)
-  - Công cụ: SQL
-  - Đầu vào: Dữ liệu đã Load ở 2.4
-  - Đầu ra: Bộ query kiểm tra: tổng Revenue khớp giữa Fact_Sales và dữ liệu processed gốc, không có khóa ngoại NULL bất thường
-  - Tiêu chí nghiệm thu: Tất cả query kiểm tra trả kết quả khớp (ghi lại trong file test log)
+  - Công cụ: SQL (query kiểm tra chạy trực tiếp qua `psql`, và tích hợp vào task `validate`
+    của DAG — `airflow/dags/retail_etl_dag.py::validate_dw()`)
+  - Đầu vào: Dữ liệu đã Load ở 2.4 (`fact_sales = 1,003,670` dòng)
+  - Đầu ra/Kết quả kiểm tra thật (2026-10-23, chạy cả qua `psql` trực tiếp và qua task
+    `validate` trong Airflow — khớp nhau):
+    - Khóa ngoại mồ côi: `orphan_date=0`, `orphan_product=0`, `orphan_country=0`,
+      `orphan_customer(non-null)=0`.
+    - Đơn hủy còn sót trong fact: **0** (`invoice_no LIKE 'C%'` → 0 dòng).
+    - Công thức Revenue sai: **0** dòng (`revenue <> round(quantity*unit_price,2)` → 0).
+    - Dòng thiếu Customer ID giữ đúng `customer_key IS NULL`: **226,813** dòng — khớp 100%
+      số liệu Transform báo cáo.
+    - Tổng Revenue trong DW: **19,659,453.86** — khớp **tuyệt đối** với tổng tính độc lập
+      bằng pandas từ `fact_sales.csv` (ngoài Load, không qua DB): `(quantity*unit_price)
+      .round(2).sum()` = 19,659,453.86.
+    - Số dimension: `dim_date=604` (ngày), `dim_customer=5,853` (khách hàng),
+      `dim_product=4,905` (sản phẩm), `dim_country=43` (quốc gia) — tất cả khớp giữa
+      `processed/*.csv` và DW, và **mọi dimension row đều được fact tham chiếu** (không có
+      dimension "mồ côi" — `count(DISTINCT ...)` trong fact bằng đúng số dòng từng dimension).
+    - Chạy lại pipeline (4 lần) không tăng bản ghi trùng (xem bằng chứng ở 2.5).
+    - **Đối chiếu với baseline (Phase 0/5):** không giống số dòng baseline cũ
+      (776,857/5,853 khách hàng) — **đúng như dự kiến vì quy tắc làm sạch khác nhau** (lần
+      này GIỮ dòng thiếu Customer ID): `dim_customer=5,853` khách hàng **trùng khớp** số
+      khách hàng duy nhất của baseline (vì baseline cũng loại null-Customer-ID), nhưng tổng
+      dòng fact (1,003,670) khác baseline (776,857) vì baseline loại cả null-Customer-ID lẫn
+      đơn hủy/giá≤0 một lượt — không coi đây là bất thường, chỉ là 2 quy tắc khác nhau cho 2
+      mục đích khác nhau (baseline cho RFM, fact_sales cho DW doanh thu đầy đủ).
+  - Tiêu chí nghiệm thu: **Đạt** — tất cả query kiểm tra khớp, có bằng chứng chạy thật ghi lại
+    ở trên và trong `docs/PROJECT_GAP_ANALYSIS.md`.
   - Phụ thuộc: 2.4, 3.2
 
 ### Phase 4 — OLAP

@@ -21,10 +21,34 @@ x-airflow-common: &airflow-common
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
     _AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER}
     _AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+    # Phase 2.1 - cho task "validate" trong DAG ket noi postgres-dw de kiem tra thuc (chua nap du lieu).
+    PG_DW_DB: ${PG_DW_DB}
+    PG_DW_USER: ${PG_DW_USER}
+    PG_DW_PASSWORD: ${PG_DW_PASSWORD}
+    # Phase 2.2 - tham so hoa hostname cho scripts/ingest/*.py khi chay trong container
+    # (mac dinh "localhost" trong script van dung khi chay tren host, xem scripts/ingest/).
+    FASTAPI_HOST: fastapi
+    PG_SOURCE_HOST: postgres-source
+    # Phase 2.4 - cho scripts/load/load.py ket noi postgres-dw bang ten service.
+    # PG_DW_PORT (.env) la port PUBLISH ra host (5433); qua ten service noi bo
+    # phai dung port NOI BO cua container Postgres (luon la 5432).
+    PG_DW_HOST: postgres-dw
+    PG_DW_PORT_INTERNAL: "5432"
+    # Phase 2.2 - openpyxl can cho scripts/ingest/ingest_file.py va ingest_database.py doc
+    # Excel; khong co san trong image apache/airflow (pandas/psycopg2 thi co san).
+    _PIP_ADDITIONAL_REQUIREMENTS: "openpyxl==3.1.5"
   volumes:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
     - ./airflow/plugins:/opt/airflow/plugins
+    # Phase 2.1 - mount read-only de task "extract" tai su dung lai scripts/ingest/*.py (Phase 1).
+    - ./scripts:/opt/airflow/scripts:ro
+    # Phase 2.2 - mirror cau truc thu muc goc repo duoi /opt/airflow de
+    # scripts/ingest/common.py (ROOT_DIR = parent cua scripts/ingest) tu tinh dung
+    # duong dan ".env"/"data/raw/"/"datalake/" ma KHONG can sua logic tinh duong dan.
+    - ./data:/opt/airflow/data:ro
+    - ./datalake:/opt/airflow/datalake
+    - ./.env:/opt/airflow/.env:ro
   networks:
     - khodl_net
   depends_on:

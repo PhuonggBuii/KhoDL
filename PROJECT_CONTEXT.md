@@ -4,7 +4,8 @@
 > cảnh. Tài liệu này được tạo/cập nhật bằng cách đọc trực tiếp code, chạy lại script, kiểm tra
 > container Docker thật — không suy đoán từ tên file.
 >
-> Cập nhật lần cuối: **2026-10-23** (sau khi hoàn thành Phase 1). Nguồn đối chiếu chi tiết hơn:
+> Cập nhật lần cuối: **2026-10-23** (sau khi hoàn thành Phase 1 và Phase 3.1/3.2). Nguồn đối
+> chiếu chi tiết hơn:
 > [`PROJECT_CHECKLIST.md`](PROJECT_CHECKLIST.md) (kế hoạch gốc + trạng thái từng task) và
 > [`docs/PROJECT_GAP_ANALYSIS.md`](docs/PROJECT_GAP_ANALYSIS.md) (lịch sử đối chiếu qua các lượt).
 
@@ -52,9 +53,14 @@ trường Python quản lý bằng `uv` (xem `pyproject.toml`, `uv.lock`, `.venv
 | 0.2 Môi trường (Docker Compose) | **IN PROGRESS** | Hạ tầng dựng xong + healthy trên 1 máy; thiếu xác nhận 2 thành viên còn lại |
 | 0.3 Quy tắc làm sạch dữ liệu | **IN PROGRESS** | Nội dung kỹ thuật xong + đã chạy thật; thiếu xác nhận nhóm bằng văn bản |
 | 1. Data Lake & 3 nguồn ingest | **DONE** | `/products` FastAPI, `source_customers` trong Postgres nguồn, `datalake/` + ingest log — tất cả kiểm thử thật |
-| 2. ETL Airflow | **TODO** | Airflow đã chạy (hạ tầng) nhưng **chưa có DAG nào** trong `airflow/dags/`; có thể tái sử dụng `scripts/ingest/*.py` làm core logic Extract |
-| 3. Data Warehouse (Star Schema) | **TODO** | `sql/` rỗng, chưa có DDL, Postgres DW chạy nhưng chưa có bảng nghiệp vụ |
-| 4. OLAP | **BLOCKED** | Phụ thuộc Phase 3 (DW phải có dữ liệu) |
+| 2.1 Thiết kế DAG | **DONE** (`[~]` chờ review TV2) | `airflow/dags/retail_etl_dag.py` — kiểm thử cấu trúc/parse/no-backfill thật |
+| 2.2 Extract thật trong container | **DONE** | Cả 3 task SUCCESS thật (test riêng + DAG run đầy đủ) |
+| 2.3 Transform thật | **DONE** | `scripts/transform/transform.py` — 1,003,670 dòng, 5 quy tắc áp dụng đúng thứ tự, có log số dòng loại từng bước |
+| 2.4 Load thật | **DONE** | `scripts/load/load.py` — UPSERT dimension + TRUNCATE/INSERT `fact_sales`, `count(*)` khớp |
+| 2.5 Idempotency | **DONE** | Chạy Load 4 lần (host×2 + Airflow×2), `fact_sales` luôn 1,003,670 dòng, không trùng |
+| 3.1/3.2 Star Schema + DDL | **DONE** | 5 bảng đã tạo trên `postgres-dw`, kiểm thử PK/FK/CHECK/idempotency thật |
+| 3.3 Xác thực sau nạp | **DONE** | 0 orphan FK, 0 đơn hủy trong fact, revenue khớp 100% tính độc lập, 226,813 dòng `customer_key=NULL` đúng thiết kế |
+| 4. OLAP | **TODO** | DW đã có dữ liệu thật (Phase 3.3 xong) — có thể bắt đầu viết query OLAP |
 | 5.1 Tính RFM | **IN PROGRESS** (lệch kiến trúc) | Có kết quả thật nhưng đọc từ CSV, chưa từ DW — xem mục 5 |
 | 5.2–5.4 Chuẩn hóa/K-Means/diễn giải cụm | **DONE** | Có kết quả + log thật, xem mục 3 |
 | 5.5 Nạp cluster vào DW | **BLOCKED** | Phụ thuộc Phase 3 (DW chưa có bảng) |
@@ -129,18 +135,115 @@ trường Python quản lý bằng `uv` (xem `pyproject.toml`, `uv.lock`, `.venv
   up` trên máy họ + chụp màn hình UI. Chỉ xác nhận được trên 1 máy → trạng thái `[~]`, không
   phải `[x]`.
 
+### 3.3.c Phase 3.1 + 3.2 — Star Schema & DDL (DONE, kiểm thử thật 2026-10-23)
+- File: [`docs/03_star_schema.md`](docs/03_star_schema.md) (thiết kế + ERD Mermaid + lý do +
+  quyết định mở), [`sql/001_create_star_schema.sql`](sql/001_create_star_schema.sql) (DDL).
+- Thiết kế dựa trên khảo sát lại thực tế dataset: `Quantity` không bao giờ = 0, `Price` âm chỉ
+  5/1,067,371 dòng, có 42,638 cặp `(Invoice, StockCode)` xuất hiện >1 dòng (→ cần surrogate key
+  riêng cho `fact_sales`, không dùng `(Invoice, StockCode)` làm khóa).
+- 5 bảng: `dim_date`, `dim_customer`, `dim_product`, `dim_country` (PK `BIGINT GENERATED
+  ALWAYS AS IDENTITY`), `fact_sales` (4 FK, `customer_key` **nullable**, `quantity`/
+  `unit_price` kiểu `NUMERIC`, `revenue` là cột **`GENERATED ALWAYS AS (ROUND(quantity *
+  unit_price, 2)) STORED`** — Postgres tự tính, không thể lệch công thức).
+- **Đã chạy DDL thật trên `khodl-postgres-dw`/`retail_dw`:** lần 1 không lỗi, `\dt` đủ 5 bảng,
+  `\d+`/`\d` xác nhận đúng PK/FK/CHECK/kiểu dữ liệu; **chạy lại lần 2** chỉ `NOTICE: already
+  exists, skipping`, vẫn 5 bảng — an toàn khi chạy lại; **test CHECK/FK/NULL thật trong 1
+  transaction rồi `ROLLBACK`** (revenue tự tính đúng, `quantity=0` bị chặn, FK sai bị chặn,
+  `customer_key=NULL` được chấp nhận) — sau `ROLLBACK`, DW xác nhận vẫn **0 dòng**.
+- **5 quyết định thiết kế còn mở, cần nhóm xác nhận** trước khi code Load (Phase 2.4): (1)
+  `Country` theo dòng giao dịch hay theo khách hàng, (2) dòng thiếu Customer ID giữ `NULL` hay
+  loại khỏi `fact_sales`, (3) đơn hủy giữ revenue âm hay loại bỏ, (4) có cần `dim_time` mức giờ,
+  (5) thuật toán chọn `description` đại diện cho `dim_product`. Chi tiết: `docs/03_star_schema.md` mục 6.
+- Chi tiết đầy đủ: `docs/PROJECT_GAP_ANALYSIS.md` mục 9.
+
+### 3.3.d Phase 2.1 — Thiết kế DAG Airflow (DONE, kiểm thử thật 2026-10-23)
+- File: [`airflow/dags/retail_etl_dag.py`](airflow/dags/retail_etl_dag.py) (mới), sửa
+  `docker-compose.yml` (thêm mount `./scripts:/opt/airflow/scripts:ro` +
+  biến `PG_DW_DB/USER/PASSWORD` vào `x-airflow-common` để DAG dùng được).
+- DAG `retail_online_ii_etl`: `start → extract{extract_api, extract_file,
+  extract_database} (song song) → transform → load → validate → end`.
+  `schedule=None`, `catchup=False`, mặc định `paused`.
+- **Đã kiểm thử thật trên `khodl-airflow-webserver`:** DAG parse không lỗi
+  (`dags list-import-errors` → "No data found"); task/dependency đúng (`tasks list --tree`);
+  không tự backfill (`dags details` → `schedule_interval: None`); `transform`/`load` →
+  `airflow tasks test` xác nhận `SKIPPED`, không ghi dữ liệu; `validate` → kết nối **thật**
+  tới `postgres-dw` (dùng tên service, không phải `localhost`), đếm `fact_sales` = 0 (đúng kỳ
+  vọng), rồi skip — không báo thành công giả.
+- **Extract — THẤT BẠI THẬT khi test ở Phase 2.1** (không phải lỗi thiết kế DAG, mà là giới
+  hạn môi trường của `scripts/ingest/*.py` từ Phase 1, vốn viết cho máy host): `extract_api`
+  `Connection refused` tới `localhost:8000`; `extract_file`/`extract_database` không tìm thấy
+  dataset. **Đã sửa xong ở Phase 2.2** (xem mục 3.3.e) — không còn là vấn đề mở.
+- Đã xác nhận: `daugiahtpt-*`/port 8080 không bị ảnh hưởng; `datalake/metadata/ingest_log.csv`
+  thật trên host không bị ghi thêm dòng nào từ test trong container (ở thời điểm Phase 2.1).
+- Chi tiết đầy đủ: `docs/PROJECT_GAP_ANALYSIS.md` mục 10.
+
+### 3.3.e Phase 2.2 — Extract chạy thật trong Airflow (DONE, kiểm thử thật 2026-10-23)
+- Sửa [`scripts/ingest/ingest_api.py`](scripts/ingest/ingest_api.py) và
+  [`ingest_database.py`](scripts/ingest/ingest_database.py): hostname đọc từ
+  `FASTAPI_HOST`/`PG_SOURCE_HOST` (biến môi trường), **mặc định vẫn `"localhost"`** — hành vi
+  trên host (Phase 1) không đổi.
+- Sửa `docker-compose.yml` (`x-airflow-common`): đặt `FASTAPI_HOST=fastapi`,
+  `PG_SOURCE_HOST=postgres-source`; thêm mount **mirror cấu trúc thư mục gốc repo** dưới
+  `/opt/airflow/` — `./data:/opt/airflow/data:ro`, `./datalake:/opt/airflow/datalake` (đọc/
+  ghi), `./.env:/opt/airflow/.env:ro` — nhờ vậy `scripts/ingest/common.py` (tính `ROOT_DIR` từ
+  `__file__`) tự tính đúng đường dẫn `.env`/`data/`/`datalake/` **mà không cần sửa code tính
+  đường dẫn nào**. Thêm `_PIP_ADDITIONAL_REQUIREMENTS: "openpyxl==3.1.5"` (image Airflow gốc
+  thiếu `openpyxl`; `pandas`/`psycopg2` đã có sẵn).
+- **Đã kiểm thử thật, cả 3 Extract task SUCCESS:**
+  - Kết nối mạng thật: `http://fastapi:8000/health` và TCP tới `postgres-source:5432` từ
+    trong container Airflow — cả hai OK.
+  - `airflow tasks test ... extract.extract_api` → SUCCESS, **5,304** sản phẩm.
+  - `airflow tasks test ... extract.extract_file` → SUCCESS, **1,067,371** dòng (khớp 0.1).
+  - `airflow tasks test ... extract.extract_database` → SUCCESS, **5,942** khách hàng; verify
+    lại bằng `psql` trực tiếp từ host: `count=5942`, không trùng.
+  - **DAG run đầy đủ qua scheduler** (`dags trigger` + tạm `unpause`, `pause` lại sau khi
+    xong): `start` → 3 `extract.*` SUCCESS → `transform`/`load`/`validate` SKIPPED đúng thiết
+    kế → `end` SUCCESS. Không task nào FAILED.
+  - Output thật xuất hiện trên **host** (`datalake/raw/{api,file,database}/2026-10-23/...`),
+    không chỉ trong container — xác nhận bằng `find -newer` và đọc trực tiếp file trên host.
+  - `data/raw/online_retail_II.xlsx` không đổi (kích thước + mtime gốc giữ nguyên, mount
+    `:ro`). `daugiahtpt-*`/port 8080 không bị ảnh hưởng.
+- Chi tiết đầy đủ: `docs/PROJECT_GAP_ANALYSIS.md` mục 11.
+
+### 3.3.f Phase 2.3+2.4+2.5+3.3 — Cụm ETL hoàn chỉnh (DONE, kiểm thử thật 2026-10-23)
+- File mới: [`scripts/transform/transform.py`](scripts/transform/transform.py),
+  [`scripts/load/load.py`](scripts/load/load.py). Sửa `airflow/dags/retail_etl_dag.py`
+  (`transform`/`load` gọi module thật thay vì SKIP; `validate` nâng cấp thành kiểm tra Phase
+  3.3 đầy đủ, FAIL thật nếu có kiểm tra không đạt). Sửa `docker-compose.yml` (thêm
+  `PG_DW_HOST`, `PG_DW_PORT_INTERNAL`).
+- **Transform** đọc trực tiếp `data/raw/online_retail_II.xlsx` (xem lý do kiến trúc ở mục 5 —
+  2 nguồn mô phỏng File/Database không có khóa chung để join lại), xác thực lineage với
+  `datalake/raw/*`, áp dụng 5 quy tắc theo thứ tự:
+  1,067,371 → dedup (**-34,335**) → đơn hủy (**-19,104**) → Quantity/Price≤0 (**-6,019**) →
+  mã phi sản phẩm (**-4,243**) → **giữ** 226,813 dòng thiếu Customer ID → **1,003,670 dòng**.
+  Dimension: `dim_date=604`, `dim_customer=5,853`, `dim_product=4,905`, `dim_country=43`.
+- **Load**: UPSERT 4 dimension (không xóa dòng cũ) + TRUNCATE/INSERT `fact_sales` (chỉ bảng
+  này). Phát hiện + sửa 1 lỗi thật: `PG_DW_PORT` (.env, =5433) là port publish ra host, khi nối
+  qua tên service `postgres-dw` phải dùng port container thật (5432) → thêm
+  `PG_DW_PORT_INTERNAL`.
+- **Idempotency**: chạy Load 4 lần (host×2, Airflow `tasks test`×1, DAG run đầy đủ×1) —
+  `fact_sales` luôn đúng 1,003,670 dòng, dimension không tăng.
+- **Validate (Phase 3.3)**: 0 orphan FK (date/product/country/customer), 0 đơn hủy sót trong
+  fact, 0 dòng sai công thức revenue, tổng revenue DW (19,659,453.86) khớp **tuyệt đối** với
+  tính độc lập bằng pandas từ CSV (không qua Load).
+- **DAG run đầy đủ qua scheduler** (`dags trigger`, tạm `unpause` rồi `pause` lại): `start` →
+  3 `extract.*` → `transform` → `load` → `validate` → `end`, **tất cả SUCCESS**, không task
+  nào FAILED/SKIPPED.
+- Đã xác nhận: dataset gốc không đổi (size/mtime), DDL (`sql/001_create_star_schema.sql`)
+  không bị sửa, `scripts/03_rfm.py`/`04_kmeans.py` không bị sửa, `daugiahtpt-*`/port 8080
+  không ảnh hưởng, không `docker compose down -v`.
+- Chi tiết đầy đủ: `docs/PROJECT_GAP_ANALYSIS.md` mục 12.
+
 ---
 
 ## 4. Những gì chưa làm (và lý do/phụ thuộc)
 
 | Việc chưa làm | Vì sao / phụ thuộc gì |
 |---|---|
-| Xác nhận nhóm cho 0.2, 0.3 | Cần hành động thủ công của TV2/TV3 (chụp màn hình, đồng ý bằng văn bản) — ngoài khả năng của 1 phiên code |
-| DAG Airflow Extract/Transform/Load (Phase 2) | Chưa viết DAG nào trong `airflow/dags/`; Phase 1 đã xong và `scripts/ingest/*.py` dùng lại được cho task Extract, nhưng Transform/Load còn cần thiết kế Star Schema (3.1) chốt trước khi code Load |
-| Star Schema DDL (Phase 3) | `sql/` rỗng; cần thiết kế ERD rồi viết `.sql`, chạy trên `postgres-dw` |
-| OLAP queries (Phase 4) | Phụ thuộc Phase 3 (DW phải có dữ liệu thật để viết/test query) |
-| RFM/K-Means đọc từ DW thay vì CSV, nạp cluster vào DW (5.1 chính thức, 5.5) | Phụ thuộc Phase 3 |
-| Superset kết nối DW + chart + dashboard (Phase 6) | Phụ thuộc Phase 3, 4, 5.5 — Superset hiện chỉ chạy trống, chưa khai báo datasource nào |
+| Xác nhận nhóm cho 0.2, 0.3, 2.1 (review DAG), 3.1 (5 quyết định nghiệp vụ) | Cần hành động thủ công của nhóm (chụp màn hình, đồng ý bằng văn bản, xem xét 5 quyết định) — ngoài khả năng của 1 phiên code. Code đã chạy theo đề xuất, nhóm có thể đổi ý sau khi xem xét |
+| OLAP queries (Phase 4) | DW đã có dữ liệu thật (1,003,670 dòng `fact_sales`) — có thể viết query Roll-up/Slice/Dice/Pivot ngay, **chưa làm** |
+| RFM/K-Means đọc từ DW thay vì CSV, nạp cluster vào DW (5.1 chính thức, 5.5) | DW đã có dữ liệu thật — không còn bị chặn bởi Phase 3, nhưng **chưa viết lại** `scripts/03_rfm.py`/`04_kmeans.py` để đọc từ DW (và không nên tự sửa 2 script này ngoài phạm vi được giao) |
+| Superset kết nối DW + chart + dashboard (Phase 6) | DW đã có dữ liệu — Superset có thể khai báo `postgres-dw` làm datasource, **chưa làm** |
 | Kiểm thử tổng, README, báo cáo, demo (Phase 7) | Phụ thuộc toàn bộ Phase 1–6 |
 | Apriori/Decision Tree (Phase 8) | Theo kế hoạch, chỉ làm sau khi Phase 0–7 xong và còn thời gian — **không phải thiếu sót** |
 
@@ -166,52 +269,84 @@ trường Python quản lý bằng `uv` (xem `pyproject.toml`, `uv.lock`, `.venv
 - Phase 1.2 (nguồn File) **không áp dụng** bộ quy tắc làm sạch đề xuất ở 0.3 — giữ bản ghi
   trùng/đơn hủy/giá âm nguyên vẹn trong snapshot `datalake/raw/file/`. Quy tắc 0.3 chỉ áp dụng
   ở bước Transform (Phase 2.3), sau khi nhóm xác nhận chính thức.
+- **Star Schema (Phase 3.1/3.2) — kiến trúc đã chốt, KHÔNG đổi:** 4 dimension dùng surrogate
+  PK `BIGINT GENERATED ALWAYS AS IDENTITY`; `fact_sales.revenue` là cột `GENERATED ALWAYS AS
+  (ROUND(quantity * unit_price, 2)) STORED` (Postgres tự tính, không tính ở ETL); `unit_price`/
+  `revenue` dùng `NUMERIC`, không `FLOAT`; `fact_sales.country_key` là FK độc lập (lấy từ dòng
+  giao dịch, không suy từ `dim_customer`). Chi tiết + lý do: `docs/03_star_schema.md`.
+- **5 quyết định nghiệp vụ của Star Schema — ĐÃ TRIỂN KHAI THẬT trong `scripts/transform/
+  transform.py` (Phase 2.3, 2026-10-23), CHƯA PHẢI đã được cả 3 thành viên chính thức xác
+  nhận** (nhóm xem xét sau vẫn có thể yêu cầu đổi — chỉ cần sửa `transform.py`, không đổi
+  schema DW):
+  1. Dòng thiếu Customer ID: **giữ** trong `fact_sales` (`customer_key = NULL`), **loại** khỏi
+     RFM theo khách hàng.
+  2. Đơn hủy (`Invoice` bắt đầu bằng `C`): **loại** khỏi `fact_sales` phục vụ doanh thu/RFM;
+     **không xóa** dữ liệu gốc trong Data Lake.
+  3. Chiều thời gian: **MVP chỉ `dim_date`**, không tạo `dim_time`.
+  4. `Description` đại diện: mô tả không rỗng xuất hiện nhiều nhất; đồng hạng → theo thứ tự
+     chữ cái; chuẩn hóa `strip()` + thu gọn khoảng trắng, không ép hoa/thường.
+  5. `Country`: lấy theo **dòng giao dịch**, không suy từ khách hàng.
+  Chi tiết + căn cứ số liệu: `docs/03_star_schema.md` mục 6. **Nhóm vẫn cần xem xét/nghiệm
+  thu** — không tự quyết thay nhóm là quyết định cuối cùng khi code Phase 2.3/2.4 thật.
 - `source_customers` trong `postgres-source` nạp theo chiến lược **TRUNCATE + INSERT lại toàn
   bộ** mỗi lần chạy (không phải upsert tăng dần) — đơn giản, idempotent, phù hợp vì bảng này
   phản ánh toàn bộ danh sách khách hàng tĩnh từ 1 dataset, không phải luồng dữ liệu tăng dần.
 - `datalake/raw/`, `datalake/processed/` nằm trong `.gitignore` (dữ liệu lớn, tái tạo được
   bằng `scripts/ingest/*.py`); riêng `datalake/metadata/ingest_log.csv` được commit làm bằng
   chứng kiểm thử.
+- **Airflow container mount `./scripts:/opt/airflow/scripts:ro`, `./data:/opt/airflow/data:ro`,
+  `./datalake:/opt/airflow/datalake` (đọc/ghi), `./.env:/opt/airflow/.env:ro`** — mirror đúng
+  cấu trúc thư mục gốc repo dưới `/opt/airflow/` để `scripts/ingest/common.py` tự tính đúng
+  đường dẫn (không sửa code tính đường dẫn). Nhận thêm `PG_DW_DB/USER/PASSWORD`,
+  `FASTAPI_HOST=fastapi`, `PG_SOURCE_HOST=postgres-source`, `_PIP_ADDITIONAL_REQUIREMENTS:
+  "openpyxl==3.1.5"`.
+- **`scripts/ingest/ingest_api.py`/`ingest_database.py` đọc hostname từ biến môi trường
+  (`FASTAPI_HOST`/`PG_SOURCE_HOST`), mặc định `"localhost"`** — chạy đúng cả trên host (Phase
+  1, không đổi hành vi) và trong container Airflow (Phase 2.2, đã verify SUCCESS thật). Không
+  tự ý đổi thêm cách tham số hóa này nếu không cần thiết.
+- **`scripts/load/load.py` đọc `PG_DW_HOST`/`PG_DW_PORT_INTERNAL`** (mặc định `"localhost"`/
+  `PG_DW_PORT`) — tách riêng `PG_DW_PORT_INTERNAL` vì `PG_DW_PORT` (.env=5433) là port publish
+  ra HOST, khác với port nội bộ container Postgres (luôn 5432) khi kết nối qua tên service
+  `postgres-dw`. Đây là lỗi thật đã gặp và sửa ở Phase 2.4 — nhớ áp dụng cùng pattern nếu thêm
+  script nào khác cần nối `postgres-dw` qua tên service trong container.
+- **`scripts/transform/transform.py` đọc TRỰC TIẾP `data/raw/online_retail_II.xlsx`**, không
+  join lại 3 "nguồn" mô phỏng trong Data Lake — vì nguồn File (1.2) không có Customer ID/
+  Country, nguồn Database (1.3) chỉ có Customer ID+Country đã khử trùng (không còn liên kết
+  Invoice) → không có khóa chung để join. Đây là hạn chế kiến trúc đã biết của thiết kế
+  3-nguồn-mô-phỏng (không phải lỗi code) — Transform vẫn xác thực `raw/file`/`raw/database`/
+  `raw/api` tồn tại trước khi tính toán, để giữ ý nghĩa "đọc từ Data Lake" ở mức lineage-check.
 
 ---
 
 ## 6. Bước tiếp theo nên làm (ưu tiên cao nhất)
 
-> Cập nhật 2026-10-23: Phase 1 (mục tiêu của bản trước đây của mục này) **đã xong**, xem mục
-> 3.3.b. Ưu tiên tiếp theo đổi sang Phase 3.1–3.2.
+> Cập nhật 2026-10-23: **Toàn bộ cụm ETL (Phase 2.1–2.5 + 3.3) đã xong**, chạy SUCCESS đầu-cuối
+> thật qua DAG. Xem mục 3.3.f. Ưu tiên tiếp theo đổi sang Phase 4 (OLAP).
 
-**Task: Phase 3.1 + 3.2 — Thiết kế Star Schema và tạo DDL trên `postgres-dw`.**
+**Task: Phase 4 — Viết query OLAP (Roll-up/Drill-down, Slice/Dice, Pivot) trên DW thật.**
 
 **Lý do chọn đây là ưu tiên cao nhất:**
-- Đây là điểm đồng bộ bắt buộc #2 của dự án (mục 6 `PROJECT_CHECKLIST.md`): phải chốt Star
-  Schema **trước khi** code task Load (2.4), và Phase 2.1 (thiết kế DAG tổng thể) cũng ghi rõ
-  phụ thuộc `3.1`. Nếu làm Phase 2 (DAG) trước, dễ phải sửa lại khi schema đổi.
-- Hạ tầng `postgres-dw` đã chạy healthy sẵn (Phase 0.2) — chỉ cần viết DDL và chạy thử, rủi ro
-  thấp, không đụng service khác.
-- Dữ liệu đã sẵn ở Phase 1 (`datalake/raw/file`, `datalake/raw/database`) + kết quả khảo sát
-  0.1 đủ để thiết kế schema có cơ sở thực tế (không phải đoán).
+- DW đã có dữ liệu thật và đã xác thực (Phase 3.3): `fact_sales` 1,003,670 dòng, tổng revenue
+  19,659,453.86, không orphan FK — đủ điều kiện để viết và kiểm thử query OLAP có ý nghĩa
+  (Phase 4 phụ thuộc đúng 3.3, nay đã đáp ứng).
+- Rủi ro thấp: chỉ viết SQL query (`SELECT`), không đổi schema, không đụng pipeline ETL.
+- Mở khóa Phase 6 (Superset) sau đó — Superset cần các query/dataset này làm nguồn chart.
 
 **Đầu vào:**
-- Kết quả khảo sát 0.1 (cột, kiểu dữ liệu, phạm vi giá trị) trong `docs/01_bao_cao_tien_do.md`.
-- Dự thảo quy tắc 0.3 trong `PROJECT_CHECKLIST.md` (grain của Fact_Sales, cách xử lý đơn hủy).
-- Cấu trúc gợi ý đã có sẵn trong `PROJECT_CHECKLIST.md` mục 3.1: `Fact_Sales` (grain = 1 dòng
-  hàng trong 1 hóa đơn, measures Quantity/UnitPrice/Revenue) + `Dim_Date`, `Dim_Customer`,
-  `Dim_Product`, `Dim_Country`.
+- `fact_sales`, `dim_date`, `dim_customer`, `dim_product`, `dim_country` trong `postgres-dw`
+  (đã có dữ liệu thật, xem mục 3.3.f).
+- Checklist mục 4.1–4.4 (`PROJECT_CHECKLIST.md`): Roll-up theo Năm→Quý→Tháng→Ngày, Slice/Dice
+  theo sản phẩm/quốc gia, Pivot (crosstab hoặc CASE WHEN).
 
 **File cần sửa/tạo:**
-- Tạo `sql/001_create_star_schema.sql` (DDL `CREATE TABLE` cho toàn bộ Fact/Dim + khóa
-  chính/ngoại) — thư mục `sql/` hiện đang rỗng.
-- Có thể thêm `docs/03_star_schema.md` hoặc hình ERD đơn giản (không bắt buộc, nhưng tiêu chí
-  nghiệm thu gốc của 3.1 yêu cầu "sơ đồ ERD" — nếu bỏ qua cần ghi rõ lý do).
+- Tạo `sql/002_olap_queries.sql` (hoặc tương đương) tập hợp các query đã kiểm thử.
 
-**Tiêu chí kiểm thử (phải làm thật trước khi tick `[x]`):**
-- Chạy `sql/001_create_star_schema.sql` trên `postgres-dw` (qua `docker exec ... psql -f` hoặc
-  tương đương) không lỗi.
-- `\dt` (hoặc `SELECT table_name FROM information_schema.tables WHERE table_schema='public'`)
-  liệt kê đủ `fact_sales`, `dim_date`, `dim_customer`, `dim_product`, `dim_country`.
-- Kiểm tra khóa ngoại tồn tại đúng (`\d fact_sales` hoặc query `information_schema`).
-- **Chưa cần nạp dữ liệu thật vào DW ở bước này** (đó là Phase 2.4) — chỉ cần schema tạo đúng,
-  rỗng dữ liệu là hợp lệ cho 3.1/3.2.
+**Tiêu chí kiểm thử (phải làm thật trước khi tick `[x]` cho Phase 4):**
+- Mỗi query chạy qua `psql` không lỗi, tổng theo Roll-up khớp tổng Revenue toàn bộ
+  (19,659,453.86).
+- Spot-check vài dòng Slice/Dice đối chiếu thủ công với `fact_sales` gốc.
+- **Không sửa `scripts/03_rfm.py`/`04_kmeans.py`, không tự chuyển sang Phase 5.5/Superset**
+  trong cùng lượt trừ khi được giao rõ.
 
 ---
 
@@ -237,6 +372,30 @@ curl http://localhost:8088/health         # Superset (UI: http://localhost:8088,
 docker exec khodl-postgres-source psql -U source_user -d retail_source -c "SELECT 1;"
 docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "SELECT 1;"
 
+# Phase 3.2 — tao Star Schema tren postgres-dw (an toan chay lai nhieu lan, da verify 2026-10-23)
+docker exec -i khodl-postgres-dw psql -U dw_user -d retail_dw -v ON_ERROR_STOP=1 < sql/001_create_star_schema.sql
+docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "\dt"          # xac nhan du 5 bang
+docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "\d+ fact_sales"  # xem PK/FK/CHECK
+
+# Phase 2.1 - kiem tra DAG Airflow (da verify 2026-10-23)
+docker exec khodl-airflow-webserver airflow dags list-import-errors   # phai "No data found"
+docker exec khodl-airflow-webserver airflow dags list                # xem DAG + is_paused
+docker exec khodl-airflow-webserver airflow tasks list retail_online_ii_etl --tree
+docker exec khodl-airflow-webserver airflow dags details retail_online_ii_etl   # schedule/catchup
+# Test tung task rieng (khong can trigger DagRun day du):
+docker exec khodl-airflow-webserver airflow tasks test retail_online_ii_etl transform 2024-01-01   # -> SUCCESS (Phase 2.3)
+docker exec khodl-airflow-webserver airflow tasks test retail_online_ii_etl load 2024-01-01         # -> SUCCESS (Phase 2.4)
+docker exec khodl-airflow-webserver airflow tasks test retail_online_ii_etl validate 2024-01-01     # -> SUCCESS (Phase 3.3, kiem tra thuc)
+docker exec khodl-airflow-webserver airflow tasks test retail_online_ii_etl extract.extract_api 2024-01-01  # -> SUCCESS (Phase 2.2)
+docker exec khodl-airflow-webserver airflow tasks test retail_online_ii_etl extract.extract_file 2024-01-01     # -> SUCCESS
+docker exec khodl-airflow-webserver airflow tasks test retail_online_ii_etl extract.extract_database 2024-01-01 # -> SUCCESS
+
+# Phase 2.2 - chay DAG day du qua scheduler (can tam unpause vi DAG mac dinh paused)
+docker exec khodl-airflow-webserver airflow dags unpause retail_online_ii_etl
+docker exec khodl-airflow-webserver airflow dags trigger retail_online_ii_etl
+docker exec khodl-airflow-webserver airflow tasks states-for-dag-run retail_online_ii_etl "<dag_run_id>"
+docker exec khodl-airflow-webserver airflow dags pause retail_online_ii_etl   # pause lai sau khi xong (an toan mac dinh)
+
 # Script phân tích (đã chạy lại và verify output trong phiên 2026-10-23)
 .venv/Scripts/python.exe scripts/01_explore_data.py
 .venv/Scripts/python.exe scripts/02_clean_data.py
@@ -250,20 +409,28 @@ docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "SELECT 1;"
 .venv/Scripts/python.exe scripts/ingest/ingest_file.py      # chỉ nguồn File
 .venv/Scripts/python.exe scripts/ingest/ingest_database.py  # chỉ nguồn Database (idempotent, chạy lại an toàn)
 cat datalake/metadata/ingest_log.csv   # xem log ingest (append-only)
+
+# Phase 2.3/2.4 - Transform + Load tren host (da chay va verify trong phien 2026-10-23)
+.venv/Scripts/python.exe scripts/transform/transform.py   # doc data/raw/*.xlsx, xuat datalake/processed/<ngay>/
+.venv/Scripts/python.exe scripts/load/load.py              # nap vao postgres-dw (idempotent, chay lai an toan)
+
+# Phase 3.3 - kiem tra thuc tren DW (da chay va verify)
+docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "SELECT count(*) FROM fact_sales;"
+docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "SELECT count(*) FROM fact_sales WHERE invoice_no LIKE 'C%';"  # phai = 0
+docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "SELECT count(*) FROM fact_sales WHERE customer_key IS NULL;"   # phai = 226813
 ```
 
-### Ghi trong docstring script nhưng CHƯA tự kiểm thử trong các phiên này
+### Dạng "uv run" tương đương (đã tự xác nhận chạy được trong phiên 2026-10-23)
 ```bash
-uv run scripts/01_explore_data.py   # tương đương lệnh .venv/Scripts/python.exe ở trên,
-                                     # nhưng chưa tự chạy qua "uv run" để xác nhận — chỉ xác
-                                     # nhận "uv --version" chạy được (uv 0.11.6) trên máy này
+uv sync                                   # cài dependency theo pyproject.toml/uv.lock
+uv run python scripts/01_explore_data.py  # hoặc "uv run scripts/01_explore_data.py" (khong can "python") - ca 2 da test OK
+uv run scripts/ingest/ingest_api.py       # tuong tu cho cac script ingest
 ```
 
 ### Chưa viết/chưa kiểm thử (vì Phase chưa tới)
-- Lệnh trigger DAG Airflow (`airflow dags trigger ...`) — chưa có DAG nào trong `airflow/dags/`.
-- Lệnh chạy DDL Star Schema (`psql -f sql/*.sql` hay tương đương) — `sql/` đang rỗng, đây là
-  nội dung của task tiếp theo (mục 6).
-- Lệnh cấu hình Superset connect tới `postgres-dw` qua UI — chưa làm.
+- Lệnh cấu hình Superset connect tới `postgres-dw` qua UI — chưa làm (Phase 6).
+- Query OLAP (Roll-up/Slice/Dice/Pivot) trên `fact_sales` — chưa viết (Phase 4, dù DW đã có
+  dữ liệu thật để làm ngay).
 
 ---
 
@@ -271,13 +438,43 @@ uv run scripts/01_explore_data.py   # tương đương lệnh .venv/Scripts/pyth
 
 1. **Không có lỗi runtime nào đang mở** tại thời điểm cập nhật tài liệu này — toàn bộ 7
    container đều `healthy` (kiểm tra `docker compose ps` lúc viết tài liệu này).
-2. **Lệch kiến trúc đã biết, chưa sửa (có chủ đích):** RFM/K-Means (Phase 5) đọc từ CSV thay
-   vì từ DW — xem mục 3.2. Không sửa cho tới khi Phase 3 (DW) xong, để tránh sửa nửa chừng gây
-   vỡ phụ thuộc.
-3. **Thiếu xác nhận đa thành viên:** 0.2 và 0.3 đã có nội dung kỹ thuật/hạ tầng thật nhưng theo
-   đúng tiêu chí nghiệm thu gốc của đồ án (3 thành viên tự chạy + đồng ý bằng văn bản), hai task
-   này vẫn ở trạng thái `[~]`, không nên tự tick `[x]` trong phiên code tiếp theo nếu chưa có
-   bằng chứng đó.
+2. **Lệch kiến trúc còn tồn tại, có chủ đích, chưa sửa:** `scripts/03_rfm.py`/`04_kmeans.py`
+   (Phase 5 baseline) vẫn đọc từ `data/processed/transactions_clean.csv`, **chưa đổi sang đọc
+   từ `fact_sales`/DW** — DW giờ đã có dữ liệu thật (Phase 2.4 xong) nên **không còn bị chặn kỹ
+   thuật**, nhưng việc sửa 2 script này nằm ngoài phạm vi các task đã giao (luôn được yêu cầu
+   rõ "không sửa script RFM/K-Means") — để lại cho task Phase 5 chính thức sau này.
+3. **Thiếu xác nhận đa thành viên:** 0.2, 0.3, 2.1 (review DAG), 3.1 (5 quyết định) đã có nội
+   dung kỹ thuật/hạ tầng/thiết kế **và code thật chạy đúng** nhưng theo đúng tiêu chí nghiệm
+   thu gốc của đồ án (3 thành viên tự chạy/review + đồng ý bằng văn bản), các task này vẫn ở
+   trạng thái `[~]`, không nên tự tick `[x]` nếu chưa có bằng chứng đó.
+4. **[ĐÃ TRIỂN KHAI — Phase 2.3]** 5 quyết định nghiệp vụ của Star Schema (mục 5 ở trên) đã
+   code thật trong `transform.py` và chạy đúng (xem mục 3.3.f) — vẫn chờ nhóm xem xét/nghiệm
+   thu chính thức, có thể cần sửa lại nếu nhóm quyết khác (không đổi schema DW, chỉ sửa logic
+   filter trong `transform.py`).
+5. **[ĐÃ SỬA — Phase 2.2/2.4]** 2 lỗi môi trường container đã gặp và sửa thật:
+   - Extract: `localhost` không trỏ tới service Docker → tham số hóa `FASTAPI_HOST`/
+     `PG_SOURCE_HOST` + mount mirror `data/`/`datalake/`/`.env`.
+   - Load: `PG_DW_PORT` (.env=5433, port publish host) khác port nội bộ container (5432) khi
+     nối qua tên service `postgres-dw` → thêm `PG_DW_PORT_INTERNAL=5432` riêng cho container.
+   Cả hai đã verify SUCCESS thật qua DAG run đầy đủ.
+9. **Baseline (Phase 0/5) và `fact_sales` (Phase 2.3/2.4) có số dòng khác nhau có chủ đích**:
+   baseline 776,857 dòng (loại cả null-Customer-ID + đơn hủy + giá/số lượng≤0 1 lượt, dùng cho
+   RFM); `fact_sales` 1,003,670 dòng (giữ null-Customer-ID, chỉ loại đơn hủy + giá/số lượng≤0,
+   dùng cho doanh thu DW đầy đủ). **Không phải bất thường** — đã ghi rõ trong 3.3, nhưng cần
+   nhớ khi đối chiếu số liệu ở Phase 7 (kiểm thử tổng) để không nhầm là lỗi.
+6. **`_PIP_ADDITIONAL_REQUIREMENTS: "openpyxl==3.1.5"`** làm container Airflow chạy `pip
+   install` **mỗi lần khởi động/recreate** (không persist vào image) — chậm hơn vài giây mỗi
+   lần `docker compose up` cho `airflow-webserver`/`airflow-scheduler`/`airflow-init`. Nếu sau
+   này cần thêm nhiều package hoặc muốn khởi động nhanh hơn, nên chuyển sang Dockerfile riêng
+   build sẵn — chưa cần thiết ở quy mô hiện tại (chỉ 1 package nhỏ).
+7. **`.env` (chứa secret thật) được mount read-only vào container Airflow** (`/opt/airflow/.env`)
+   để `scripts/ingest/*.py::load_env_file()` hoạt động đúng khi chạy trong container — rủi ro
+   thấp (Airflow là service nội bộ, không public-facing, `.env` vẫn không commit) nhưng cần
+   biết: ai có quyền `docker exec` vào container Airflow đều đọc được các secret này.
+8. **`datalake/metadata/ingest_log.csv`** giờ có cả dòng ghi `output_path` dạng
+   `/opt/airflow/datalake/...` (khi chạy từ Airflow) lẫn dạng `P:\...` (khi chạy từ host) — hai
+   định dạng đường dẫn khác nhau cho cùng 1 file vật lý (do mount mirror), không phải lỗi, chỉ
+   là log ghi đúng đường dẫn nhìn từ môi trường đã chạy.
 4. **File `BaoCaoChuDe.pdf`** (đề bài gốc, đã commit trước đây ở commit `be01f05`) hiện **không
    còn trên đĩa** (`git status` báo `D BaoCaoChuDe.pdf`, chưa stage/commit). Đây là quan sát từ
    phiên trước, **không phải do các phiên Claude Code gây ra** (không có lệnh xoá file nào được

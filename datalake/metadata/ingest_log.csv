@@ -9,3 +9,26 @@ timestamp_utc,source,status,record_count,output_path,error_message
 2026-10-22T17:56:26+00:00,file,success,1067371,P:\Downloads\Study\KhoDL\datalake\raw\file\2026-10-22\transactions_file_source.csv,
 2026-10-22T17:57:11+00:00,database,success,5942,P:\Downloads\Study\KhoDL\datalake\raw\database\2026-10-22\customers_from_db.csv,
 2026-10-23T13:31:49+00:00,api,success,5304,P:\Downloads\Study\KhoDL\datalake\raw\api\2026-10-23\products.json,
+2026-10-23T15:29:06+00:00,file,success,1067371,/opt/airflow/datalake/raw/file/2026-10-23/transactions_file_source.csv,
+2026-10-23T15:29:52+00:00,database,success,5942,/opt/airflow/datalake/raw/database/2026-10-23/customers_from_db.csv,
+2026-10-23T15:30:00+00:00,api,success,5304,/opt/airflow/datalake/raw/api/2026-10-23/products.json,
+2026-10-23T15:34:09+00:00,api,success,5304,/opt/airflow/datalake/raw/api/2026-10-23/products.json,
+2026-10-23T15:34:52+00:00,database,success,5942,/opt/airflow/datalake/raw/database/2026-10-23/customers_from_db.csv,
+2026-10-23T15:34:54+00:00,file,success,1067371,/opt/airflow/datalake/raw/file/2026-10-23/transactions_file_source.csv,
+2026-10-23T15:47:29+00:00,transform,success,1003670,P:\Downloads\Study\KhoDL\datalake\processed\2026-10-23,
+2026-10-23T15:50:42+00:00,load,success,1003670,P:\Downloads\Study\KhoDL\datalake\processed\2026-10-23,
+2026-10-23T15:52:32+00:00,load,success,1003670,P:\Downloads\Study\KhoDL\datalake\processed\2026-10-23,
+2026-10-23T15:57:56+00:00,transform,success,1003670,/opt/airflow/datalake/processed/2026-10-23,
+2026-10-23T15:58:06+00:00,load,failed,,/opt/airflow/datalake/processed/2026-10-23,"connection to server at ""postgres-dw"" (172.19.0.5), port 5433 failed: Connection refused
+	Is the server running on that host and accepting TCP/IP connections?
+"
+2026-10-23T15:58:17+00:00,load,failed,,/opt/airflow/datalake/processed/2026-10-23,"connection to server at ""postgres-dw"" (172.19.0.5), port 5433 failed: Connection refused
+	Is the server running on that host and accepting TCP/IP connections?
+"
+2026-10-23T16:00:57+00:00,load,success,1003670,P:\Downloads\Study\KhoDL\datalake\processed\2026-10-23,
+2026-10-23T16:03:11+00:00,load,success,1003670,/opt/airflow/datalake/processed/2026-10-23,
+2026-10-23T16:03:35+00:00,api,success,5304,/opt/airflow/datalake/raw/api/2026-10-23/products.json,
+2026-10-23T16:04:38+00:00,database,success,5942,/opt/airflow/datalake/raw/database/2026-10-23/customers_from_db.csv,
+2026-10-23T16:04:42+00:00,file,success,1067371,/opt/airflow/datalake/raw/file/2026-10-23/transactions_file_source.csv,
+2026-10-23T16:05:50+00:00,transform,success,1003670,/opt/airflow/datalake/processed/2026-10-23,
+2026-10-23T16:07:36+00:00,load,success,1003670,/opt/airflow/datalake/processed/2026-10-23,

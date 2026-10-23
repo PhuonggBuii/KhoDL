@@ -1,15 +1,17 @@
 # KhoDL — Phân tích hành vi mua sắm & phân nhóm khách hàng (Online Retail II)
 
 Đồ án môn **Kho dữ liệu và Khai phá dữ liệu** — PTIT. Hướng dẫn này giúp một thành viên
-**chưa từng chạy dự án** clone repo về máy và chạy được toàn bộ phần đã hoàn thành.
+**chưa từng chạy dự án** clone repo về máy khác và chạy được toàn bộ phần đã hoàn thành, từ
+`docker compose up` tới khi có dữ liệu thật trong Data Warehouse.
 
-> **Trạng thái hiện tại: Phase 0 (khảo sát + môi trường) và Phase 1 (3 nguồn ingest + Data
-> Lake) đã hoàn thành, có kiểm thử thật.** Phase 2 (Airflow DAG), Phase 3 (Data Warehouse),
-> Phase 4 (OLAP), Phase 6 (Superset dashboard) **chưa triển khai** — hạ tầng (container) của
-> các service này đã chạy sẵn nhưng chưa có nội dung nghiệp vụ. Chi tiết đầy đủ, bằng chứng
-> kiểm thử, và việc cần làm tiếp theo: xem [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md),
-> [`PROJECT_CHECKLIST.md`](PROJECT_CHECKLIST.md) và
-> [`docs/PROJECT_GAP_ANALYSIS.md`](docs/PROJECT_GAP_ANALYSIS.md).
+> **Trạng thái hiện tại: pipeline ETL đầu-cuối đã chạy thành công thật** — Extract (3 nguồn
+> mô phỏng) → Transform (áp dụng quy tắc làm sạch) → Load (nạp Star Schema) → Validate, tất cả
+> qua DAG Airflow `retail_online_ii_etl`, `fact_sales` có **1.003.670 dòng** dữ liệu thật đã
+> xác thực. **Phase 4 (OLAP), Phase 5.5 (nạp cluster vào DW), Phase 6 (Superset dashboard)
+> chưa triển khai** — hạ tầng (container) đã chạy sẵn nhưng chưa có nội dung nghiệp vụ cho các
+> phase này. Chi tiết đầy đủ, bằng chứng kiểm thử, quyết định kỹ thuật và việc cần làm tiếp
+> theo: xem [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md), [`PROJECT_CHECKLIST.md`](PROJECT_CHECKLIST.md)
+> và [`docs/PROJECT_GAP_ANALYSIS.md`](docs/PROJECT_GAP_ANALYSIS.md).
 
 ---
 
@@ -20,7 +22,7 @@
 K-Means) → Dashboard (Superset).
 
 **Dataset:** [Online Retail II (Kaggle)](https://www.kaggle.com/datasets/lakshmi25npathi/online-retail-dataset)
-— giao dịch bán lẻ online 2009–2011.
+— giao dịch bán lẻ online 2009–2011 (1.067.371 dòng gốc).
 
 **Ba "nguồn dữ liệu" đều là mô phỏng từ cùng 1 dataset Online Retail II**, tách theo chiều dữ
 liệu — **không phải 3 nguồn độc lập ngoài đời thực**:
@@ -29,9 +31,9 @@ liệu — **không phải 3 nguồn độc lập ngoài đời thực**:
 |---|---|---|
 | **API** | Danh mục sản phẩm duy nhất (StockCode, Description, giá tham chiếu) | FastAPI (`api/`) |
 | **File** | Giao dịch (Invoice, StockCode, Quantity, InvoiceDate, Price), giữ nguyên bản gốc | Đọc Excel trực tiếp (`scripts/ingest/ingest_file.py`) |
-| **Database** | Khách hàng (Customer ID, Country) | PostgreSQL nguồn (`postgres-source`) |
+| **Database** | Khách hàng (Customer ID, Country), đã khử trùng theo khách hàng | PostgreSQL nguồn (`postgres-source`) |
 
-**Kiến trúc tổng quan:**
+**Kiến trúc & luồng dữ liệu (đã chạy thật đầu-cuối):**
 
 ```
 online_retail_II.xlsx (Kaggle)
@@ -39,19 +41,39 @@ online_retail_II.xlsx (Kaggle)
    ├─ API (FastAPI /products)        ─┐
    ├─ File (doc truc tiep Excel)      ├─► Data Lake (datalake/raw/{api,file,database})
    └─ Database (postgres-source)     ─┘        + datalake/metadata/ingest_log.csv
-                                               │
-                                     (Phase 2 — CHƯA LÀM)
+                                               │   Airflow DAG: task group "extract"
                                                ▼
-                                   PostgreSQL Data Warehouse (Star Schema)
+                                  Transform (scripts/transform/transform.py)
+                                  - doc truc tiep dataset goc (xem ghi chu *)
+                                  - bo trung lap, loai don huy, loai Qty/Price<=0,
+                                    loai ma phi san pham; GIU dong thieu Customer ID
+                                               │
+                                               ▼
+                                  datalake/processed/<ngay>/{dim_*,fact_sales}.csv
+                                               │   Airflow DAG task: "load"
+                                               ▼
+                       PostgreSQL Data Warehouse (Star Schema) — postgres-dw
+                       dim_date · dim_customer · dim_product · dim_country · fact_sales
+                       (1.003.670 dong, da xac thuc - Airflow DAG task: "validate")
                                                │
                                      (Phase 4/6 — CHƯA LÀM)
                                                ▼
                                    OLAP + Data Mining → Superset Dashboard
 ```
 
+**(\*) Ghi chú kiến trúc quan trọng:** `Transform` đọc trực tiếp `data/raw/online_retail_II.xlsx`
+(không join lại 3 "nguồn" mô phỏng trong Data Lake), vì nguồn **File** không mang Customer
+ID/Country và nguồn **Database** chỉ lưu Customer ID+Country **đã khử trùng theo khách hàng**
+(không còn liên kết Invoice) — hai nguồn này không có khóa chung để join lại thành 1 dòng giao
+dịch đầy đủ. Đây là hạn chế đã biết của kiến trúc "3 nguồn mô phỏng từ 1 dataset", không phải
+lỗi. Transform vẫn xác thực `datalake/raw/*` (kết quả Extract) tồn tại và khớp số dòng trước
+khi tính toán. Chi tiết: [`docs/03_star_schema.md`](docs/03_star_schema.md) mục 6,
+[`docs/PROJECT_GAP_ANALYSIS.md`](docs/PROJECT_GAP_ANALYSIS.md) mục 12.
+
 Data Mining (RFM + K-Means, `scripts/03_rfm.py`, `scripts/04_kmeans.py`) đã có kết quả thật
-nhưng hiện đọc từ `data/processed/transactions_clean.csv` (baseline tạm), **chưa đọc từ Data
-Warehouse** vì DW (Phase 3) chưa tồn tại.
+nhưng vẫn đọc từ `data/processed/transactions_clean.csv` (baseline riêng từ Phase 0/5) — **chưa
+đổi sang đọc từ Data Warehouse** dù DW nay đã có dữ liệu, vì việc này thuộc phạm vi một task
+Phase 5 chính thức riêng, chưa thực hiện.
 
 ---
 
@@ -60,13 +82,14 @@ Warehouse** vì DW (Phase 3) chưa tồn tại.
 | Công cụ | Bắt buộc cho | Đã xác minh chạy với |
 |---|---|---|
 | **Git** | Clone repo | — |
-| **Docker Desktop** (kèm Docker Compose) | Chạy toàn bộ hạ tầng (Postgres, Airflow, FastAPI, Superset) | Docker 29.8.1, Compose v5.5.1 (phiên bản mới hơn tương đương vẫn dùng được) |
-| **Python ≥ 3.11** + **[uv](https://docs.astral.sh/uv/)** | Chạy script trên host: khảo sát/làm sạch dữ liệu (`scripts/`), ingest Phase 1 (`scripts/ingest/`) | Python 3.11 (`.python-version`), uv 0.11.6 |
+| **Docker Desktop** (kèm Docker Compose) | Chạy toàn bộ hạ tầng (Postgres×3, Airflow, FastAPI, Superset) | Docker 29.8.1, Compose v5.5.1 (phiên bản mới hơn tương đương vẫn dùng được) |
+| **Python ≥ 3.11** + **[uv](https://docs.astral.sh/uv/)** | Chạy script trên host: khảo sát/làm sạch dữ liệu, ingest (Phase 1), Transform/Load (Phase 2.3/2.4) | Python 3.11 (`.python-version`), uv 0.11.6 |
 | Tài khoản Kaggle (miễn phí) | Tải dataset gốc | — |
 
-**Ghi chú:** FastAPI/Airflow/Superset chạy **trong container** (không cần cài Python trực
-tiếp để chạy chúng) — Python + uv trên host chỉ cần khi bạn muốn tự chạy script khảo sát dữ
-liệu, ingest Phase 1, hoặc RFM/K-Means. Nếu chỉ cần xem hạ tầng chạy, Docker Desktop là đủ.
+**Ghi chú:** FastAPI/Airflow/Superset/Postgres chạy **trong container** (không cần cài Python
+trực tiếp để chạy chúng) — Python + uv trên host chỉ cần khi bạn muốn tự chạy script
+khảo sát/ingest/transform/load **từ host** thay vì qua Airflow. Nếu chỉ cần hạ tầng + chạy
+pipeline qua Airflow UI, Docker Desktop là đủ.
 
 ---
 
@@ -79,10 +102,12 @@ liệu, ingest Phase 1, hoặc RFM/K-Means. Nếu chỉ cần xem hạ tầng ch
 
 File này gồm 2 sheet `Year 2009-2010` và `Year 2010-2011`, cột: `Invoice, StockCode,
 Description, Quantity, InvoiceDate, Price, Customer ID, Country` (đã xác minh trực tiếp từ
-code, xem `scripts/01_explore_data.py`).
+code và dữ liệu thật nhiều lần, xem `scripts/01_explore_data.py`).
 
 **Không commit dataset gốc lên Git** — file này đã có trong `.gitignore`
-(`data/raw/*`), xem thêm [`data/README.md`](data/README.md).
+(`data/raw/*`), xem thêm [`data/README.md`](data/README.md). Dataset **phải có trước** khi
+chạy bất kỳ bước ingest/transform nào ở mục E — nếu thiếu, các script sẽ báo lỗi rõ
+`FileNotFoundError` (xem mục F).
 
 ---
 
@@ -116,33 +141,41 @@ python -c "import os, base64; print(base64.urlsafe_b64encode(os.urandom(32)).dec
 `AIRFLOW_ADMIN_PASSWORD`/`SUPERSET_ADMIN_PASSWORD`. Các biến `*_PORT` giữ nguyên trừ khi bị
 xung đột cổng trên máy bạn (xem mục F).
 
+`.env.example` chứa **đầy đủ, đúng tên** mọi biến môi trường mà `docker-compose.yml` và các
+script thực sự đọc (đối chiếu trực tiếp với code trong lượt cập nhật này) — không cần thêm
+biến nào khác. Vài biến host-nội-bộ (`FASTAPI_HOST`, `PG_SOURCE_HOST`, `PG_DW_HOST`,
+`PG_DW_PORT_INTERNAL`) được đặt cố định ngay trong `docker-compose.yml` (không qua `.env`) vì
+chỉ dùng khi script chạy **trong** container Airflow — không cần bạn tự cấu hình.
+
 ### 3. Cài Python dependencies (cho script host)
 ```bash
 uv sync
 ```
-Lệnh này đọc đúng `pyproject.toml`/`uv.lock`, tạo `.venv/` với các package cần thiết
-(pandas, scikit-learn, psycopg2-binary, openpyxl, matplotlib).
+Lệnh này đọc đúng `pyproject.toml`/`uv.lock`, tạo `.venv/` với các package cần thiết (pandas,
+scikit-learn, psycopg2-binary, openpyxl, matplotlib).
 
 ---
 
 ## E. Khởi chạy dự án
 
-### 1. Khởi động toàn bộ hạ tầng bằng Docker Compose
+### Lần đầu tiên (từ máy sạch)
+
+**1. Khởi động toàn bộ hạ tầng bằng Docker Compose**
 ```bash
 docker compose up -d --build
 ```
 Lệnh này tự khởi động đúng thứ tự (Postgres → Airflow init → Airflow webserver/scheduler;
-Superset, FastAPI độc lập) nhờ các điều kiện `depends_on`/`healthcheck` đã khai báo trong
+Superset, FastAPI độc lập) nhờ `depends_on`/`healthcheck` đã khai báo trong
 `docker-compose.yml` — **đã kiểm thử thật**: toàn bộ 7 container chuyển sang `healthy` trong
-dưới 1 phút từ trạng thái sạch.
+dưới 2 phút từ trạng thái sạch (Airflow cài thêm `openpyxl` lúc khởi động nên có thể chậm hơn
+vài chục giây ở lần đầu — xem mục F).
 
-### 2. Kiểm tra trạng thái container
+**2. Kiểm tra trạng thái container**
 ```bash
 docker compose ps
 ```
 Cả 7 dòng (`postgres-source`, `postgres-dw`, `postgres-airflow`, `airflow-webserver`,
-`airflow-scheduler`, `fastapi`, `superset`) phải ở trạng thái `healthy` (có thể mất 30–90s sau
-khi chạy lệnh ở bước 1).
+`airflow-scheduler`, `fastapi`, `superset`) phải ở trạng thái `healthy`.
 
 | Service | URL/Port trên host | Đăng nhập |
 |---|---|---|
@@ -155,43 +188,87 @@ khi chạy lệnh ở bước 1).
 > Airflow UI dùng cổng **8081** (không phải 8080 mặc định) để tránh xung đột với service khác
 > có thể đang chạy trên máy bạn — xem `AIRFLOW_WEBSERVER_PORT` trong `.env`.
 
-### 3. Chạy Phase 1 — ingest 3 nguồn vào Data Lake
+**3. Tạo Star Schema trên PostgreSQL DW** (chỉ cần làm 1 lần — script an toàn chạy lại nhiều
+lần, dùng `CREATE TABLE IF NOT EXISTS`, không xóa gì):
 ```bash
-uv run scripts/ingest/run_all.py
+docker exec -i khodl-postgres-dw psql -U <PG_DW_USER_trong_.env> -d <PG_DW_DB_trong_.env> -v ON_ERROR_STOP=1 < sql/001_create_star_schema.sql
+docker exec khodl-postgres-dw psql -U <PG_DW_USER_trong_.env> -d <PG_DW_DB_trong_.env> -c "\dt"
 ```
-Script này gọi FastAPI `/products` (nguồn API), đọc Excel (nguồn File), và nạp+SELECT lại
-PostgreSQL nguồn (nguồn Database) — tuần tự, in log ra console và ghi vào
-`datalake/metadata/ingest_log.csv`. Có thể chạy lại nhiều lần an toàn (nguồn Database là
-idempotent — không tạo bản ghi trùng; nguồn API/File ghi đè file snapshot cùng ngày).
+(Giá trị mặc định trong `.env.example`: user `dw_user`, db `retail_dw`.) Kết quả mong đợi:
+đúng 5 bảng `dim_date, dim_customer, dim_product, dim_country, fact_sales`.
 
-Chạy riêng từng nguồn nếu cần:
+**4. Chạy toàn bộ pipeline ETL qua Airflow DAG**
+
+DAG `retail_online_ii_etl` đã có sẵn trong `airflow/dags/retail_etl_dag.py`, mặc định ở trạng
+thái **tạm dừng (paused)** để tránh tự kích hoạt ngoài ý muốn. Kích hoạt và chạy thử công:
 ```bash
-uv run scripts/ingest/ingest_api.py
-uv run scripts/ingest/ingest_file.py
-uv run scripts/ingest/ingest_database.py
+docker exec khodl-airflow-webserver airflow dags unpause retail_online_ii_etl
+docker exec khodl-airflow-webserver airflow dags trigger retail_online_ii_etl
+```
+Theo dõi tiến trình qua Airflow UI (http://localhost:8081, mục *DAGs* → `retail_online_ii_etl`
+→ *Grid*), hoặc qua lệnh:
+```bash
+docker exec khodl-airflow-webserver airflow dags list-runs -d retail_online_ii_etl
+```
+Luồng task: `start → extract (api, file, database, chạy song song) → transform → load →
+validate → end`. Toàn bộ pipeline (Extract → Transform → Load → Validate) **đã kiểm thử chạy
+SUCCESS thật** — thời gian chạy đầy đủ khoảng 3–5 phút (Transform đọc + xử lý ~1 triệu dòng
+Excel, Load nạp lại vào Postgres).
+
+Sau khi DAG chạy xong, nên tạm dừng lại để tránh chạy lại ngoài ý muốn (DAG set `schedule=None`
+nên không tự chạy lại, nhưng tạm dừng vẫn là thói quen an toàn):
+```bash
+docker exec khodl-airflow-webserver airflow dags pause retail_online_ii_etl
 ```
 
-### 4. Kiểm tra kết quả
+### Các lần chạy sau (đã có `.env`, dataset, Star Schema)
+
+Chỉ cần `docker compose up -d` (không cần `--build` lại trừ khi sửa code `api/`) rồi trigger
+lại DAG như bước 4 nếu muốn chạy lại pipeline — **Load là idempotent** (đã kiểm thử chạy lại
+nhiều lần, không tạo dữ liệu trùng), nên chạy lại an toàn bất cứ lúc nào.
+
+### Chạy pipeline trực tiếp trên host (không qua Airflow, để debug nhanh)
+
+```bash
+uv run scripts/ingest/run_all.py        # Extract: API + File + Database
+uv run scripts/transform/transform.py   # Transform: doc dataset goc, ap dung quy tac, xuat datalake/processed/
+uv run scripts/load/load.py             # Load: nap vao postgres-dw (idempotent)
+```
+
+### Kiểm tra kết quả
+
 ```bash
 curl http://localhost:8000/health              # {"status":"healthy"}
 curl http://localhost:8000/products             # danh sách sản phẩm (JSON), ~5.300 StockCode
 cat datalake/metadata/ingest_log.csv            # lịch sử ingest (append-only)
 ```
+
+Kiểm tra dữ liệu trong PostgreSQL DW:
+```bash
+docker exec khodl-postgres-dw psql -U <PG_DW_USER_trong_.env> -d <PG_DW_DB_trong_.env> -c "
+SELECT 'dim_date' t, count(*) FROM dim_date
+UNION ALL SELECT 'dim_customer', count(*) FROM dim_customer
+UNION ALL SELECT 'dim_product', count(*) FROM dim_product
+UNION ALL SELECT 'dim_country', count(*) FROM dim_country
+UNION ALL SELECT 'fact_sales', count(*) FROM fact_sales;"
+```
+Kết quả mong đợi (đã verify thật, 2026-10-23): `dim_date=604`, `dim_customer=5853`,
+`dim_product=4905`, `dim_country=43`, `fact_sales=1003670`.
+
 Kiểm tra bảng `source_customers` trong Postgres nguồn:
 ```bash
 docker exec khodl-postgres-source psql -U <PG_SOURCE_USER_trong_.env> -d <PG_SOURCE_DB_trong_.env> -c "SELECT count(*) FROM source_customers;"
 ```
-(Giá trị mặc định trong `.env.example`: user `source_user`, db `retail_source` — kết quả mong
-đợi: **5.942** dòng, đã xác minh khớp số liệu khảo sát ở `docs/01_bao_cao_tien_do.md`.)
+(Mặc định: user `source_user`, db `retail_source` — kết quả mong đợi: **5.942** dòng.)
 
-### 5. Dừng service an toàn (không mất dữ liệu)
+### Dừng service an toàn (không mất dữ liệu)
 ```bash
 docker compose stop           # dung container, GIU container + du lieu (volume)
 # hoac
 docker compose down           # xoa container, GIU volume (du lieu Postgres/Airflow/Superset van con)
 ```
 **Không** chạy `docker compose down -v` hoặc xóa volume Docker — lệnh đó sẽ xóa toàn bộ dữ
-liệu đã nạp trong `postgres-source`/`postgres-dw`/Airflow/Superset.
+liệu đã nạp trong `postgres-source`/`postgres-dw`/Airflow/Superset, phải làm lại từ đầu.
 
 ---
 
@@ -200,13 +277,16 @@ liệu đã nạp trong `postgres-source`/`postgres-dw`/Airflow/Superset.
 | Triệu chứng | Nguyên nhân | Cách xử lý |
 |---|---|---|
 | `docker compose up` báo lỗi `...dockerDesktopLinuxEngine...The system cannot find the file specified` | Docker Desktop chưa chạy (daemon chưa khởi động) | Mở ứng dụng Docker Desktop, chờ icon trạng thái "Running", chạy lại lệnh |
-| `FileNotFoundError: Khong tim thay dataset tai .../data/raw/online_retail_II.xlsx` (khi gọi `/products` hoặc chạy `scripts/ingest/ingest_file.py`) | Chưa đặt dataset đúng vị trí | Xem lại mục C, đảm bảo đúng tên file `online_retail_II.xlsx` trong `data/raw/` |
+| `FileNotFoundError: Khong tim thay dataset tai .../data/raw/online_retail_II.xlsx` (khi gọi `/products`, chạy ingest, hoặc chạy Transform) | Chưa đặt dataset đúng vị trí | Xem lại mục C, đảm bảo đúng tên file `online_retail_II.xlsx` trong `data/raw/` |
 | `curl /products` trả `{"detail":"Khong tim thay dataset..."}` (HTTP 503) | FastAPI container không thấy dataset | Kiểm tra `docker-compose.yml` có mount `./data:/app/data:ro` cho service `fastapi`; đảm bảo file tồn tại trên host trước khi `docker compose up` |
 | `docker compose up` báo port đã được dùng (`bind: address already in use`) | Một service khác trên máy đang chiếm cổng (ví dụ 5432, 8080, 8088) | Đổi cổng tương ứng trong `.env` (`PG_SOURCE_PORT`, `AIRFLOW_WEBSERVER_PORT`, `SUPERSET_PORT`, `FASTAPI_PORT`, `PG_DW_PORT`), chạy lại `docker compose up -d --build` |
-| `docker compose ps` cho thấy Postgres chưa `healthy` sau >1 phút | Máy chậm hoặc đang khởi động lần đầu | Chờ thêm, xem log cụ thể bằng `docker logs <container_name>` |
-| `scripts/ingest/ingest_database.py` lỗi `KeyError: 'PG_SOURCE_PORT'` hoặc tương tự | Chưa tạo `.env` hoặc thiếu biến | Xem lại mục D bước 2 — đảm bảo `.env` tồn tại ở gốc repo và có đủ biến như `.env.example` |
+| `docker compose ps` cho thấy Postgres/Airflow chưa `healthy` sau >2 phút | Máy chậm, đang cài `openpyxl` lúc khởi động (Airflow), hoặc khởi động lần đầu | Chờ thêm, xem log cụ thể bằng `docker logs <container_name>` (ví dụ `docker logs khodl-airflow-webserver` sẽ thấy dòng cài `openpyxl` nếu đang chạy) |
+| `scripts/ingest/ingest_database.py` hoặc `scripts/load/load.py` lỗi `KeyError: 'PG_SOURCE_PORT'`/`'PG_DW_PORT'` | Chưa tạo `.env` hoặc thiếu biến | Xem lại mục D bước 2 — đảm bảo `.env` tồn tại ở gốc repo và có đủ biến như `.env.example` |
 | `uv run ...` báo thiếu package (`ModuleNotFoundError`) | Chưa chạy `uv sync` | Chạy `uv sync` ở gốc repo rồi thử lại |
 | Lần gọi `/products` đầu tiên sau khi (re)build container rất chậm (~60–90s) | FastAPI phải đọc + parse Excel 45MB bằng `openpyxl` lần đầu để tạo cache | Không phải lỗi — các lần gọi sau trả về gần như tức thì nhờ cache trong bộ nhớ |
+| DAG `retail_online_ii_etl` không chạy sau khi `dags trigger` | DAG mặc định ở trạng thái **paused** | Chạy `airflow dags unpause retail_online_ii_etl` trước khi `dags trigger` (xem mục E bước 4) |
+| Task `load` trong DAG lỗi `connection ... failed` tới `postgres-dw` khi tự thêm script mới kết nối DW | Nhầm port: `PG_DW_PORT` (.env) là port publish ra **host** (5433), nhưng kết nối qua tên service Docker nội bộ phải dùng port **container** (luôn là 5432) | Dùng biến `PG_DW_PORT_INTERNAL` (đã đặt sẵn `=5432` trong `docker-compose.yml` cho Airflow) khi viết script mới cần nối `postgres-dw` từ trong container — xem `scripts/load/load.py::_connection_params()` làm mẫu |
+| Task trong DAG lỗi `relation "fact_sales" does not exist` | Chưa tạo Star Schema | Chạy lại bước E.3 (`sql/001_create_star_schema.sql`) trước khi chạy DAG |
 
 ---
 
@@ -214,19 +294,26 @@ liệu đã nạp trong `postgres-source`/`postgres-dw`/Airflow/Superset.
 
 Theo [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) mục 6, task ưu tiên cao nhất tiếp theo là:
 
-- **Phase 3.1 + 3.2 — Thiết kế Star Schema và viết DDL cho `postgres-dw`** (`sql/` hiện đang
-  rỗng). Đây là điểm đồng bộ bắt buộc trước khi code DAG Airflow Load (Phase 2.4).
+- **Phase 4 — Viết query OLAP** (Roll-up/Drill-down theo thời gian, Slice/Dice theo sản
+  phẩm/quốc gia, Pivot) trên `fact_sales` đã có dữ liệu thật. Không còn bị chặn kỹ thuật.
+
+Các phần **đã hoàn thành, có kiểm thử thật** (không chỉ hạ tầng container):
+
+- Phase 1 — 3 nguồn ingest + Data Lake.
+- Phase 2 (2.1–2.5) — Thiết kế + chạy DAG Airflow Extract → Transform → Load, idempotent.
+- Phase 3 (3.1–3.3) — Star Schema, DDL, nạp dữ liệu thật, xác thực đầy đủ.
 
 Các phần **chưa triển khai**, không được coi là đã hoàn thành dù hạ tầng container đã chạy:
 
-- Phase 2 — DAG Airflow Extract/Transform/Load (`airflow/dags/` hiện đang rỗng).
-- Phase 3 — Star Schema PostgreSQL DW (`sql/` hiện đang rỗng).
-- Phase 4 — OLAP queries.
-- Phase 5.5 — Nạp kết quả phân cụm (`cluster_label`) vào Data Warehouse.
-- Phase 6 — Kết nối Superset với DW + dashboard (Superset hiện chạy nhưng chưa có datasource/chart nào).
+- Phase 4 — OLAP queries (`sql/` chỉ có DDL, chưa có query OLAP).
+- Phase 5.5 — Nạp kết quả phân cụm (`cluster_label`) vào Data Warehouse; Phase 5.1 chính thức
+  (RFM đọc từ DW thay vì CSV baseline).
+- Phase 6 — Kết nối Superset với DW + dashboard (Superset hiện chạy nhưng chưa có
+  datasource/chart nào).
 - Phase 7 — Kiểm thử tổng, báo cáo, demo.
 - Phase 8 — Apriori/Decision Tree (mở rộng, chỉ làm nếu còn thời gian).
 
 Chi tiết đầy đủ từng Phase, bằng chứng kiểm thử và quyết định kỹ thuật đã thống nhất: xem
 [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md), [`PROJECT_CHECKLIST.md`](PROJECT_CHECKLIST.md),
-[`docs/PROJECT_GAP_ANALYSIS.md`](docs/PROJECT_GAP_ANALYSIS.md).
+[`docs/PROJECT_GAP_ANALYSIS.md`](docs/PROJECT_GAP_ANALYSIS.md),
+[`docs/03_star_schema.md`](docs/03_star_schema.md) (thiết kế Star Schema + ERD).

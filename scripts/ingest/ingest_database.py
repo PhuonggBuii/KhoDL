@@ -7,7 +7,10 @@ lan khong tao ban ghi trung (giong chien luoc "xoa-nap lai theo batch" da
 chon san cho Phase 2.5).
 
 Yeu cau: service postgres-source dang chay va healthy (docker compose up -d
-postgres-source), bien moi truong doc tu .env o goc repo.
+postgres-source), bien moi truong doc tu .env o goc repo. Host ket noi Postgres
+doc tu PG_SOURCE_HOST (.env hoac moi truong), mac dinh "localhost" de chay dung
+tren may host nhu truoc (Phase 1). Khi chay trong container Airflow (Phase 2.2),
+docker-compose.yml dat PG_SOURCE_HOST=postgres-source (ten service Docker).
 
 Chay: uv run scripts/ingest/ingest_database.py
 """
@@ -38,7 +41,7 @@ CREATE TABLE IF NOT EXISTS source_customers (
 
 def _connection_params() -> dict:
     return {
-        "host": "localhost",
+        "host": os.environ.get("PG_SOURCE_HOST", "localhost"),
         "port": os.environ["PG_SOURCE_PORT"],
         "dbname": os.environ["PG_SOURCE_DB"],
         "user": os.environ["PG_SOURCE_USER"],
