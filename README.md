@@ -4,14 +4,15 @@
 **chưa từng chạy dự án** clone repo về máy khác và chạy được toàn bộ phần đã hoàn thành, từ
 `docker compose up` tới khi có dữ liệu thật trong Data Warehouse.
 
-> **Trạng thái hiện tại: pipeline ETL đầu-cuối đã chạy thành công thật** — Extract (3 nguồn
-> mô phỏng) → Transform (áp dụng quy tắc làm sạch) → Load (nạp Star Schema) → Validate, tất cả
-> qua DAG Airflow `retail_online_ii_etl`, `fact_sales` có **1.003.670 dòng** dữ liệu thật đã
-> xác thực. **Phase 4 (OLAP), Phase 5.5 (nạp cluster vào DW), Phase 6 (Superset dashboard)
-> chưa triển khai** — hạ tầng (container) đã chạy sẵn nhưng chưa có nội dung nghiệp vụ cho các
-> phase này. Chi tiết đầy đủ, bằng chứng kiểm thử, quyết định kỹ thuật và việc cần làm tiếp
-> theo: xem [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md), [`PROJECT_CHECKLIST.md`](PROJECT_CHECKLIST.md)
-> và [`docs/PROJECT_GAP_ANALYSIS.md`](docs/PROJECT_GAP_ANALYSIS.md).
+> **Trạng thái hiện tại: Phase 0–6 đã triển khai và kiểm thử thật.** Extract (3 nguồn mô
+> phỏng) → Transform → Load → Validate (Airflow DAG `retail_online_ii_etl`, `fact_sales` =
+> **1.003.670 dòng**) → OLAP (13 view SQL) → Data Mining (RFM + K-Means từ DW, bảng
+> `customer_segment` = **5.853 khách hàng**) → Superset Dashboard (6 chart, 2 bộ lọc, kết nối
+> thật tới Data Warehouse). **Phase 7 (kiểm thử tổng/báo cáo/demo) đang hoàn thiện, Phase 8
+> (Apriori/Decision Tree) là mở rộng tùy chọn, chưa làm.** Chi tiết đầy đủ, bằng chứng kiểm
+> thử, quyết định kỹ thuật: xem [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md),
+> [`PROJECT_CHECKLIST.md`](PROJECT_CHECKLIST.md), [`docs/PROJECT_GAP_ANALYSIS.md`](docs/PROJECT_GAP_ANALYSIS.md)
+> và [`docs/00_bao_cao_do_an.md`](docs/00_bao_cao_do_an.md) (báo cáo tổng hợp + kịch bản demo).
 
 ---
 
@@ -56,9 +57,16 @@ online_retail_II.xlsx (Kaggle)
                        dim_date · dim_customer · dim_product · dim_country · fact_sales
                        (1.003.670 dong, da xac thuc - Airflow DAG task: "validate")
                                                │
-                                     (Phase 4/6 — CHƯA LÀM)
-                                               ▼
-                                   OLAP + Data Mining → Superset Dashboard
+                        ┌──────────────────────┼──────────────────────┐
+                        ▼                      ▼                      │
+              OLAP (sql/002_olap_views.sql)   RFM + K-Means tu DW      │
+              13 view SQL (roll-up/slice/     (scripts/mining/*.py)    │
+              dice/pivot/KPI)                 -> bang customer_segment │
+                        │                      │                       │
+                        └──────────┬───────────┘                       │
+                                   ▼                                   │
+                        Apache Superset Dashboard  <────────────────────┘
+                        (6 chart, 2 filter, ket noi postgres-dw thuc)
 ```
 
 **(\*) Ghi chú kiến trúc quan trọng:** `Transform` đọc trực tiếp `data/raw/online_retail_II.xlsx`
@@ -70,10 +78,12 @@ lỗi. Transform vẫn xác thực `datalake/raw/*` (kết quả Extract) tồn 
 khi tính toán. Chi tiết: [`docs/03_star_schema.md`](docs/03_star_schema.md) mục 6,
 [`docs/PROJECT_GAP_ANALYSIS.md`](docs/PROJECT_GAP_ANALYSIS.md) mục 12.
 
-Data Mining (RFM + K-Means, `scripts/03_rfm.py`, `scripts/04_kmeans.py`) đã có kết quả thật
-nhưng vẫn đọc từ `data/processed/transactions_clean.csv` (baseline riêng từ Phase 0/5) — **chưa
-đổi sang đọc từ Data Warehouse** dù DW nay đã có dữ liệu, vì việc này thuộc phạm vi một task
-Phase 5 chính thức riêng, chưa thực hiện.
+Data Mining (RFM + K-Means) có **2 pipeline**: baseline (`scripts/03_rfm.py`,
+`scripts/04_kmeans.py`, đọc từ `data/processed/transactions_clean.csv`, giữ nguyên làm tham
+chiếu) và pipeline chính thức đọc trực tiếp từ Data Warehouse
+(`scripts/mining/rfm_dw.py`, `scripts/mining/cluster_dw.py`,
+`scripts/mining/load_segments_dw.py`) — đã đối chiếu khớp tuyệt đối baseline. Chi tiết:
+[`docs/05_rfm_kmeans_dw.md`](docs/05_rfm_kmeans_dw.md).
 
 ---
 
@@ -221,11 +231,37 @@ nên không tự chạy lại, nhưng tạm dừng vẫn là thói quen an toàn
 docker exec khodl-airflow-webserver airflow dags pause retail_online_ii_etl
 ```
 
+**5. Tạo OLAP view + nạp Data Mining (RFM/K-Means) vào DW + cấu hình Superset**
+
+Sau khi DAG Load xong (`fact_sales` đã có dữ liệu), chạy tiếp (idempotent, chạy lại an toàn):
+
+```bash
+# OLAP (Phase 4) - 13 view SQL (roll-up, slice, dice, pivot, KPI)
+docker exec -i khodl-postgres-dw psql -U <PG_DW_USER> -d <PG_DW_DB> -f - < sql/002_olap_views.sql
+
+# Data Mining tu DW (Phase 5.1, 5.5) - RFM + K-Means + bang customer_segment
+uv run scripts/mining/rfm_dw.py
+uv run scripts/mining/cluster_dw.py
+docker exec -i khodl-postgres-dw psql -U <PG_DW_USER> -d <PG_DW_DB> -f - < sql/003_customer_segment.sql
+uv run scripts/mining/load_segments_dw.py
+
+# Superset (Phase 6) - them driver Postgres (1 lan), tao database/dataset/chart/dashboard
+docker compose up -d superset
+uv run scripts/superset/provision_superset.py
+```
+
+Chi tiết từng bước, công thức, số liệu đối chiếu: [`docs/04_olap.md`](docs/04_olap.md),
+[`docs/05_rfm_kmeans_dw.md`](docs/05_rfm_kmeans_dw.md), [`docs/06_superset_dashboard.md`](docs/06_superset_dashboard.md).
+Sau khi chạy xong, mở `http://localhost:8088` (đăng nhập bằng `SUPERSET_ADMIN_USER`/
+`SUPERSET_ADMIN_PASSWORD` trong `.env`) → **Dashboards** → "Online Retail II - Tong quan kinh
+doanh" để xem dashboard.
+
 ### Các lần chạy sau (đã có `.env`, dataset, Star Schema)
 
 Chỉ cần `docker compose up -d` (không cần `--build` lại trừ khi sửa code `api/`) rồi trigger
 lại DAG như bước 4 nếu muốn chạy lại pipeline — **Load là idempotent** (đã kiểm thử chạy lại
-nhiều lần, không tạo dữ liệu trùng), nên chạy lại an toàn bất cứ lúc nào.
+nhiều lần, không tạo dữ liệu trùng), nên chạy lại an toàn bất cứ lúc nào. Các bước 5 (OLAP/
+Mining/Superset) cũng idempotent — chạy lại không tạo view/dòng/object trùng.
 
 ### Chạy pipeline trực tiếp trên host (không qua Airflow, để debug nhanh)
 
@@ -254,6 +290,12 @@ UNION ALL SELECT 'fact_sales', count(*) FROM fact_sales;"
 ```
 Kết quả mong đợi (đã verify thật, 2026-10-23): `dim_date=604`, `dim_customer=5853`,
 `dim_product=4905`, `dim_country=43`, `fact_sales=1003670`.
+
+Kiểm tra OLAP view + bảng `customer_segment`:
+```bash
+docker exec khodl-postgres-dw psql -U <PG_DW_USER> -d <PG_DW_DB> -c "SELECT count(*) FROM information_schema.views WHERE table_schema='public';"  -- = 13
+docker exec khodl-postgres-dw psql -U <PG_DW_USER> -d <PG_DW_DB> -c "SELECT segment_name, count(*) FROM customer_segment GROUP BY segment_name;"   -- tong = 5853
+```
 
 Kiểm tra bảng `source_customers` trong Postgres nguồn:
 ```bash
@@ -287,33 +329,37 @@ liệu đã nạp trong `postgres-source`/`postgres-dw`/Airflow/Superset, phải
 | DAG `retail_online_ii_etl` không chạy sau khi `dags trigger` | DAG mặc định ở trạng thái **paused** | Chạy `airflow dags unpause retail_online_ii_etl` trước khi `dags trigger` (xem mục E bước 4) |
 | Task `load` trong DAG lỗi `connection ... failed` tới `postgres-dw` khi tự thêm script mới kết nối DW | Nhầm port: `PG_DW_PORT` (.env) là port publish ra **host** (5433), nhưng kết nối qua tên service Docker nội bộ phải dùng port **container** (luôn là 5432) | Dùng biến `PG_DW_PORT_INTERNAL` (đã đặt sẵn `=5432` trong `docker-compose.yml` cho Airflow) khi viết script mới cần nối `postgres-dw` từ trong container — xem `scripts/load/load.py::_connection_params()` làm mẫu |
 | Task trong DAG lỗi `relation "fact_sales" does not exist` | Chưa tạo Star Schema | Chạy lại bước E.3 (`sql/001_create_star_schema.sql`) trước khi chạy DAG |
+| `test_connection`/tạo database Superset lỗi `Could not load database driver: PostgresEngineSpec` | Image `apache/superset` gốc chưa có driver `psycopg2` | Đảm bảo `docker-compose.yml` đã có dòng `pip install psycopg2-binary` trong `command` của service `superset` (đã có sẵn trong repo), rồi `docker compose up -d superset` để tạo lại container với lệnh mới |
+| `scripts/superset/provision_superset.py` lỗi `KeyError: 'SUPERSET_ADMIN_USER'`/kết nối `Connection refused` tới `localhost:8088` | Thiếu `.env` hoặc Superset chưa `healthy` | Kiểm tra `.env` có đủ biến `SUPERSET_*`; chạy `docker compose ps` đợi `khodl-superset` thành `healthy` trước khi chạy script |
+| Chạy `provision_superset.py` báo lỗi khi tạo dataset/chart (ví dụ thiếu view) | Chưa chạy `sql/002_olap_views.sql` hoặc `sql/003_customer_segment.sql` trước | Chạy đúng thứ tự ở mục E bước 5: tạo view/bảng trước, rồi mới chạy script mining và Superset |
 
 ---
 
-## G. Hướng phát triển tiếp theo
+## G. Hạn chế của dữ liệu và phương pháp
 
-Theo [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) mục 6, task ưu tiên cao nhất tiếp theo là:
+- **3 "nguồn dữ liệu" (API/File/Database) là mô phỏng** từ cùng 1 dataset Online Retail II,
+  không phải hệ thống độc lập ngoài đời thực (xem mục A).
+- **Không có khóa chung** để join lại 3 nguồn raw trong Data Lake thành 1 dòng giao dịch đầy
+  đủ (File thiếu Customer ID/Country, Database chỉ có Customer ID+Country đã khử trùng) —
+  Transform đọc trực tiếp dataset gốc, đây là hạn chế kiến trúc đã biết, không phải lỗi.
+- **22,77% dòng gốc thiếu Customer ID** — giữ trong `fact_sales` (`customer_key=NULL`, đo đủ
+  doanh thu), loại khỏi RFM/phân khúc theo khách hàng.
+- **K=4 cho K-Means không phải Silhouette cao nhất** (K=2 cao hơn) — chọn vì lý do nghiệp vụ
+  (4 phân khúc diễn giải được: VIP/trung thành/mới-ít tương tác/nguy cơ rời bỏ).
+- **segment_name là heuristic xếp hạng tương đối** giữa các cụm, không phải chuẩn ngành — xem
+  `docs/05_rfm_kmeans_dw.md` mục 3.
+- Dashboard Superset được tạo qua REST API, chưa xác nhận bằng mắt trong trình duyệt (môi
+  trường phát triển không có browser) — xem `docs/06_superset_dashboard.md` mục 6.
 
-- **Phase 4 — Viết query OLAP** (Roll-up/Drill-down theo thời gian, Slice/Dice theo sản
-  phẩm/quốc gia, Pivot) trên `fact_sales` đã có dữ liệu thật. Không còn bị chặn kỹ thuật.
+## H. Tài liệu đầy đủ
 
-Các phần **đã hoàn thành, có kiểm thử thật** (không chỉ hạ tầng container):
-
-- Phase 1 — 3 nguồn ingest + Data Lake.
-- Phase 2 (2.1–2.5) — Thiết kế + chạy DAG Airflow Extract → Transform → Load, idempotent.
-- Phase 3 (3.1–3.3) — Star Schema, DDL, nạp dữ liệu thật, xác thực đầy đủ.
-
-Các phần **chưa triển khai**, không được coi là đã hoàn thành dù hạ tầng container đã chạy:
-
-- Phase 4 — OLAP queries (`sql/` chỉ có DDL, chưa có query OLAP).
-- Phase 5.5 — Nạp kết quả phân cụm (`cluster_label`) vào Data Warehouse; Phase 5.1 chính thức
-  (RFM đọc từ DW thay vì CSV baseline).
-- Phase 6 — Kết nối Superset với DW + dashboard (Superset hiện chạy nhưng chưa có
-  datasource/chart nào).
-- Phase 7 — Kiểm thử tổng, báo cáo, demo.
-- Phase 8 — Apriori/Decision Tree (mở rộng, chỉ làm nếu còn thời gian).
-
-Chi tiết đầy đủ từng Phase, bằng chứng kiểm thử và quyết định kỹ thuật đã thống nhất: xem
-[`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md), [`PROJECT_CHECKLIST.md`](PROJECT_CHECKLIST.md),
-[`docs/PROJECT_GAP_ANALYSIS.md`](docs/PROJECT_GAP_ANALYSIS.md),
-[`docs/03_star_schema.md`](docs/03_star_schema.md) (thiết kế Star Schema + ERD).
+| Chủ đề | File |
+|---|---|
+| Ngữ cảnh, quyết định kỹ thuật, bằng chứng kiểm thử | [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) |
+| Checklist từng task, trạng thái, tiêu chí nghiệm thu | [`PROJECT_CHECKLIST.md`](PROJECT_CHECKLIST.md) |
+| Đối chiếu kế hoạch vs hiện trạng | [`docs/PROJECT_GAP_ANALYSIS.md`](docs/PROJECT_GAP_ANALYSIS.md) |
+| Thiết kế Star Schema + ERD | [`docs/03_star_schema.md`](docs/03_star_schema.md) |
+| OLAP (Roll-up/Drill-down, Slice, Dice, Pivot) | [`docs/04_olap.md`](docs/04_olap.md) |
+| RFM + K-Means từ DW, bảng `customer_segment` | [`docs/05_rfm_kmeans_dw.md`](docs/05_rfm_kmeans_dw.md) |
+| Superset — cấu hình, chart, dashboard | [`docs/06_superset_dashboard.md`](docs/06_superset_dashboard.md) |
+| Báo cáo tổng hợp, kịch bản demo, Q&A, checklist nộp bài | [`docs/00_bao_cao_do_an.md`](docs/00_bao_cao_do_an.md) |

@@ -60,12 +60,12 @@ trường Python quản lý bằng `uv` (xem `pyproject.toml`, `uv.lock`, `.venv
 | 2.5 Idempotency | **DONE** | Chạy Load 4 lần (host×2 + Airflow×2), `fact_sales` luôn 1,003,670 dòng, không trùng |
 | 3.1/3.2 Star Schema + DDL | **DONE** | 5 bảng đã tạo trên `postgres-dw`, kiểm thử PK/FK/CHECK/idempotency thật |
 | 3.3 Xác thực sau nạp | **DONE** | 0 orphan FK, 0 đơn hủy trong fact, revenue khớp 100% tính độc lập, 226,813 dòng `customer_key=NULL` đúng thiết kế |
-| 4. OLAP | **TODO** | DW đã có dữ liệu thật (Phase 3.3 xong) — có thể bắt đầu viết query OLAP |
-| 5.1 Tính RFM | **IN PROGRESS** (lệch kiến trúc) | Có kết quả thật nhưng đọc từ CSV, chưa từ DW — xem mục 5 |
-| 5.2–5.4 Chuẩn hóa/K-Means/diễn giải cụm | **DONE** | Có kết quả + log thật, xem mục 3 |
-| 5.5 Nạp cluster vào DW | **BLOCKED** | Phụ thuộc Phase 3 (DW chưa có bảng) |
-| 6. Dashboard Superset | **TODO** | Superset đã chạy (hạ tầng) nhưng chưa kết nối DW, chưa có chart nào |
-| 7. Kiểm thử tổng/báo cáo/demo | **BLOCKED** | Phụ thuộc Phase 1–4, 6 |
+| 4. OLAP (4.1-4.4) | **DONE đầy đủ** | 13 view SQL (Roll-up Ngày/Tháng/Quý/Năm, Slice, Dice, Pivot, KPI), kiểm thử khớp tuyệt đối với `fact_sales`, idempotent — xem mục 3.3.g |
+| 5.1 Tính RFM | **DONE** (từ DW, 2026-10-24) | `scripts/mining/rfm_dw.py` đọc trực tiếp `fact_sales JOIN dim_customer`, khớp tuyệt đối baseline CSV — xem mục 3.2b |
+| 5.2–5.4 Chuẩn hóa/K-Means/diễn giải cụm | **DONE** | Có kết quả + log thật (baseline CSV và DW), xem mục 3.2/3.2b |
+| 5.5 Nạp cluster vào DW | **DONE** (2026-10-24) | Bảng `customer_segment` (`sql/003_customer_segment.sql`) + UPSERT (`scripts/mining/load_segments_dw.py`), 5.853 dòng, 0 orphan FK, chạy lại idempotent — xem mục 3.2b |
+| 6. Dashboard Superset | **DONE qua API (2026-10-24)** | Database+5 dataset+6 chart+1 dashboard tạo qua REST API, đối chiếu khớp DW; **chưa xác nhận bằng mắt trong browser** (môi trường không có browser) — xem `docs/06_superset_dashboard.md` |
+| 7. Kiểm thử tổng/báo cáo/demo | **Phần lớn xong** | `docs/00_bao_cao_do_an.md` đã tổng hợp báo cáo+demo+Q&A+checklist; còn thiếu: xác nhận browser, tên thật thành viên, chữ ký nhóm 0.3 |
 | 8. Mở rộng (Apriori/Decision Tree) | **TODO** (đúng kế hoạch, chưa cần làm) | Chỉ làm nếu còn thời gian sau Phase 0–7 |
 
 ---
@@ -90,11 +90,28 @@ trường Python quản lý bằng `uv` (xem `pyproject.toml`, `uv.lock`, `.venv
   KH), trung thành (1,875), mới/ít tương tác (1,397), nguy cơ rời bỏ (1,634).
 - Output: `data/processed/rfm.csv`, `data/processed/customer_segments.csv`,
   `docs/silhouette_scores.png`.
-- **Lưu ý quan trọng:** pipeline này đọc trực tiếp từ `transactions_clean.csv`, **không phải
-  từ Data Warehouse** như thiết kế gốc yêu cầu (vì DW chưa tồn tại). Đây là baseline/prototype
-  dùng để đối chiếu số liệu sau này (Phase 7.1/7.2), **không phải pipeline chính thức**. Khi
-  Phase 3 xong, cần viết lại bước đọc dữ liệu (đọc từ `Fact_Sales`/`Dim_Customer` trong
-  `postgres-dw`) rồi mới tick `[x]` thật cho 5.1 và làm 5.5.
+- **Lưu ý:** pipeline này đọc trực tiếp từ `transactions_clean.csv`, **không phải từ Data
+  Warehouse**. Đây là baseline/prototype, **giữ nguyên không sửa** — dùng để đối chiếu số liệu
+  với pipeline chính thức đọc từ DW (mục 3.2b). `scripts/03_rfm.py`/`04_kmeans.py` KHÔNG bị sửa.
+
+### 3.2b RFM + K-Means từ DW, nạp cluster vào DW (Phase 5.1, 5.5 chính thức — DONE 2026-10-24)
+- File mới (không sửa baseline): [`scripts/mining/rfm_dw.py`](scripts/mining/rfm_dw.py),
+  [`scripts/mining/cluster_dw.py`](scripts/mining/cluster_dw.py),
+  [`sql/003_customer_segment.sql`](sql/003_customer_segment.sql),
+  [`scripts/mining/load_segments_dw.py`](scripts/mining/load_segments_dw.py).
+  Tài liệu đầy đủ: [`docs/05_rfm_kmeans_dw.md`](docs/05_rfm_kmeans_dw.md).
+- RFM đọc trực tiếp `fact_sales JOIN dim_customer` (SQL, lọc `customer_key IS NOT NULL`) →
+  5,853 khách hàng — **đối chiếu baseline: khớp tuyệt đối** (0 khách hàng lệch, lệch Monetary
+  tối đa 0.002 do dấu phẩy động).
+- K-Means tính lại từ đầu trên dữ liệu DW (không giả định K=4): best_k=2 (silhouette 0.4182),
+  business_k=4 (silhouette 0.3611) — **giống tuyệt đối** giá trị baseline đã báo cáo trước đó,
+  vì input giống tuyệt đối và `random_state`/`n_init` cố định.
+- Bảng `customer_segment` (riêng, KHÔNG `ALTER dim_customer`) đã tạo trên `postgres-dw` và nạp
+  bằng UPSERT: 5,853 dòng, 0 orphan FK, tổng 4 cụm (947+1,875+1,397+1,634) = 5,853, chạy lại
+  UPSERT lần 2 vẫn 5,853 dòng (không trùng lặp), DDL chạy lại idempotent (NOTICE skip).
+  `fact_sales` xác nhận không đổi: 1,003,670 dòng, revenue 19,659,453.86.
+- Superset chưa kết nối thật (Phase 6.1 chưa làm) — nhưng truy vấn mẫu `GROUP BY segment_name`
+  đã kiểm thử chạy đúng qua `psql` (xem `docs/05_rfm_kmeans_dw.md` mục 4).
 
 ### 3.3.b Phase 1 — Data Lake & 3 nguồn ingest (DONE, kiểm thử thật 2026-10-23)
 - File: [`api/app/data.py`](api/app/data.py) (mới), [`api/app/main.py`](api/app/main.py) (sửa),
@@ -234,6 +251,31 @@ trường Python quản lý bằng `uv` (xem `pyproject.toml`, `uv.lock`, `.venv
   không ảnh hưởng, không `docker compose down -v`.
 - Chi tiết đầy đủ: `docs/PROJECT_GAP_ANALYSIS.md` mục 12.
 
+### 3.3.g Phase 4.1–4.4 — OLAP views đầy đủ (DONE, kiểm thử thật 2026-10-24)
+- File: [`sql/002_olap_views.sql`](sql/002_olap_views.sql) (**13 view**, lượt đầu 9 + lượt
+  này bổ sung 4), [`docs/04_olap.md`](docs/04_olap.md) (thiết kế + kết quả kiểm thử đầy đủ,
+  giải thích nghiệp vụ từng phép OLAP).
+- **4.1 Roll-up/Drill-down:** `v_olap_sales_{daily,monthly,quarterly,yearly}` — hoàn thiện
+  phân cấp **Năm → Quý → Tháng → Ngày** (thêm `v_olap_sales_daily` lượt này).
+- **4.2 Slice:** `v_olap_sales_by_country`, `v_olap_product_revenue` + top10,
+  `v_olap_customer_revenue` + top10 (loại NULL Customer ID) + `v_olap_sales_missing_customer`
+  (mới, tách riêng phần bị loại để không "mất dấu" dữ liệu).
+- **4.2 Dice (mới):** `v_olap_dice_country_year` — Quốc gia × Năm.
+- **4.3 Pivot (mới):** `v_olap_pivot_country_by_year` — ma trận Quốc gia × Năm
+  (2009/2010/2011, 3 giá trị thật từ `dim_date`), dùng `SUM(CASE WHEN...)`.
+- **4.4 Tổng hợp:** 1 file `sql/002_olap_views.sql`, phân loại rõ "dashboard core" (bind trực
+  tiếp Superset) vs "view minh họa OLAP" (Dice/Pivot).
+- **Đã kiểm thử thật, mọi mức đều khớp tuyệt đối với `fact_sales` (1.003.670 dòng,
+  19.659.453,86):** Roll-up cả 4 mức (kể cả Ngày mới, đối chiếu Ngày→Tháng cho 01/2010 =
+  612.605,50 khớp 2 cách tính); Slice quốc gia/sản phẩm; Slice khách hàng
+  (17.082.085,77/776.857 + phần loại NULL 2.577.368,09/226.813 = đúng tổng); Dice khớp đúng
+  từng năm với Roll-up Năm; Pivot — 0/43 dòng sai tổng hàng, tổng cột khớp đúng 3 năm + tổng
+  toàn kho; JOIN 2 dimension đồng thời (Dice/Pivot) vẫn giữ đúng 1.003.670 dòng (không nhân
+  bản). **Chạy lại file SQL lần 2 — idempotent**, không lỗi, không tạo đối tượng trùng.
+- **Phát hiện đối chiếu chéo thú vị (giữ từ lượt trước):** số dòng sau khi loại Customer ID
+  NULL (776.857) trùng khớp hoàn toàn với số dòng baseline Phase 0.
+- Chi tiết đầy đủ: `docs/PROJECT_GAP_ANALYSIS.md` mục 13.
+
 ---
 
 ## 4. Những gì chưa làm (và lý do/phụ thuộc)
@@ -241,9 +283,8 @@ trường Python quản lý bằng `uv` (xem `pyproject.toml`, `uv.lock`, `.venv
 | Việc chưa làm | Vì sao / phụ thuộc gì |
 |---|---|
 | Xác nhận nhóm cho 0.2, 0.3, 2.1 (review DAG), 3.1 (5 quyết định nghiệp vụ) | Cần hành động thủ công của nhóm (chụp màn hình, đồng ý bằng văn bản, xem xét 5 quyết định) — ngoài khả năng của 1 phiên code. Code đã chạy theo đề xuất, nhóm có thể đổi ý sau khi xem xét |
-| OLAP queries (Phase 4) | DW đã có dữ liệu thật (1,003,670 dòng `fact_sales`) — có thể viết query Roll-up/Slice/Dice/Pivot ngay, **chưa làm** |
-| RFM/K-Means đọc từ DW thay vì CSV, nạp cluster vào DW (5.1 chính thức, 5.5) | DW đã có dữ liệu thật — không còn bị chặn bởi Phase 3, nhưng **chưa viết lại** `scripts/03_rfm.py`/`04_kmeans.py` để đọc từ DW (và không nên tự sửa 2 script này ngoài phạm vi được giao) |
-| Superset kết nối DW + chart + dashboard (Phase 6) | DW đã có dữ liệu — Superset có thể khai báo `postgres-dw` làm datasource, **chưa làm** |
+| Superset kết nối `postgres-dw` + chart (Phase 6) | 13 view OLAP (`sql/002_olap_views.sql`) đã sẵn sàng làm nguồn — **chưa cấu hình Superset UI** |
+| OLAP Pivot Thời gian × Sản phẩm | Chỉ làm Pivot Quốc gia × Năm (4.905 sản phẩm quá nhiều cột); nếu cần, nên pivot Top N sản phẩm × Năm/Quý — **chưa làm** |
 | Kiểm thử tổng, README, báo cáo, demo (Phase 7) | Phụ thuộc toàn bộ Phase 1–6 |
 | Apriori/Decision Tree (Phase 8) | Theo kế hoạch, chỉ làm sau khi Phase 0–7 xong và còn thời gian — **không phải thiếu sót** |
 
@@ -320,33 +361,36 @@ trường Python quản lý bằng `uv` (xem `pyproject.toml`, `uv.lock`, `.venv
 
 ## 6. Bước tiếp theo nên làm (ưu tiên cao nhất)
 
-> Cập nhật 2026-10-23: **Toàn bộ cụm ETL (Phase 2.1–2.5 + 3.3) đã xong**, chạy SUCCESS đầu-cuối
-> thật qua DAG. Xem mục 3.3.f. Ưu tiên tiếp theo đổi sang Phase 4 (OLAP).
+> Cập nhật 2026-10-24: **Toàn bộ Phase 4 (4.1–4.4: Roll-up Ngày/Tháng/Quý/Năm, Slice, Dice,
+> Pivot) đã xong**, 13 view kiểm thử khớp tuyệt đối với `fact_sales`, idempotent. Xem mục
+> 3.3.g. Ưu tiên tiếp theo: **Phase 6 (Superset)**.
 
-**Task: Phase 4 — Viết query OLAP (Roll-up/Drill-down, Slice/Dice, Pivot) trên DW thật.**
+**Task: Phase 6 — Kết nối Superset với `postgres-dw` và dựng chart từ các view OLAP.**
 
 **Lý do chọn đây là ưu tiên cao nhất:**
-- DW đã có dữ liệu thật và đã xác thực (Phase 3.3): `fact_sales` 1,003,670 dòng, tổng revenue
-  19,659,453.86, không orphan FK — đủ điều kiện để viết và kiểm thử query OLAP có ý nghĩa
-  (Phase 4 phụ thuộc đúng 3.3, nay đã đáp ứng).
-- Rủi ro thấp: chỉ viết SQL query (`SELECT`), không đổi schema, không đụng pipeline ETL.
-- Mở khóa Phase 6 (Superset) sau đó — Superset cần các query/dataset này làm nguồn chart.
+- Superset đã chạy healthy (Phase 0.2) nhưng chưa có datasource nào. 13 view OLAP (đủ cả
+  roll-up/slice/dice/pivot/KPI) đã sẵn sàng làm nguồn chart trực tiếp — không cần viết SQL
+  mới trong Superset.
+- Rủi ro thấp: chỉ cấu hình qua UI Superset (thêm database connection + dataset), không đổi
+  schema/dữ liệu.
+- Phase 4 không còn việc gì chặn Phase 6 (Pivot/Dice đã xong ở lượt này).
 
 **Đầu vào:**
-- `fact_sales`, `dim_date`, `dim_customer`, `dim_product`, `dim_country` trong `postgres-dw`
-  (đã có dữ liệu thật, xem mục 3.3.f).
-- Checklist mục 4.1–4.4 (`PROJECT_CHECKLIST.md`): Roll-up theo Năm→Quý→Tháng→Ngày, Slice/Dice
-  theo sản phẩm/quốc gia, Pivot (crosstab hoặc CASE WHEN).
+- `sql/002_olap_views.sql` (13 view đã kiểm thử, xem mục 3.3.g) — ưu tiên dùng nhóm "dashboard
+  core" cho chart đơn (`v_olap_sales_yearly`, `v_olap_sales_by_country`,
+  `v_olap_top10_products`, `v_olap_kpi_summary`...).
+- Thông tin kết nối `postgres-dw` trong `.env` (`PG_DW_*`).
 
 **File cần sửa/tạo:**
-- Tạo `sql/002_olap_queries.sql` (hoặc tương đương) tập hợp các query đã kiểm thử.
+- Không cần file mới — cấu hình qua Superset UI (Database connection → Dataset → Chart →
+  Dashboard). Có thể cần ghi lại bước cấu hình vào `docs/05_superset.md` nếu muốn tái lập.
 
-**Tiêu chí kiểm thử (phải làm thật trước khi tick `[x]` cho Phase 4):**
-- Mỗi query chạy qua `psql` không lỗi, tổng theo Roll-up khớp tổng Revenue toàn bộ
-  (19,659,453.86).
-- Spot-check vài dòng Slice/Dice đối chiếu thủ công với `fact_sales` gốc.
-- **Không sửa `scripts/03_rfm.py`/`04_kmeans.py`, không tự chuyển sang Phase 5.5/Superset**
-  trong cùng lượt trừ khi được giao rõ.
+**Tiêu chí kiểm thử (phải làm thật trước khi tick `[x]` cho Phase 6):**
+- Superset kết nối `postgres-dw` thành công, thấy được danh sách view/bảng.
+- Tạo được ít nhất 1 chart từ `v_olap_kpi_summary` hoặc `v_olap_sales_yearly`, số liệu khớp
+  với `psql` trực tiếp.
+- **Không sửa `scripts/03_rfm.py`/`04_kmeans.py`, không tự triển khai Phase 5.5** trong cùng
+  lượt trừ khi được giao rõ.
 
 ---
 
@@ -376,6 +420,19 @@ docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "SELECT 1;"
 docker exec -i khodl-postgres-dw psql -U dw_user -d retail_dw -v ON_ERROR_STOP=1 < sql/001_create_star_schema.sql
 docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "\dt"          # xac nhan du 5 bang
 docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "\d+ fact_sales"  # xem PK/FK/CHECK
+
+# Phase 4.1/4.2 - tao view OLAP tren postgres-dw (an toan chay lai, da verify 2026-10-24)
+docker exec -i khodl-postgres-dw psql -U dw_user -d retail_dw -v ON_ERROR_STOP=1 < sql/002_olap_views.sql
+docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "SELECT * FROM v_olap_kpi_summary;"
+docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "SELECT * FROM v_olap_sales_yearly;"
+docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "SELECT * FROM v_olap_top10_products;"
+docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "SELECT * FROM v_olap_top10_customers;"
+
+# Phase 4.1 (Drill-down Ngay), 4.2 (Dice), 4.3 (Pivot) - bo sung 2026-10-24, da verify
+docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "SELECT * FROM v_olap_sales_daily ORDER BY full_date LIMIT 10;"
+docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "SELECT * FROM v_olap_sales_missing_customer;"
+docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "SELECT * FROM v_olap_dice_country_year ORDER BY total_revenue DESC LIMIT 10;"
+docker exec khodl-postgres-dw psql -U dw_user -d retail_dw -c "SELECT * FROM v_olap_pivot_country_by_year LIMIT 10;"
 
 # Phase 2.1 - kiem tra DAG Airflow (da verify 2026-10-23)
 docker exec khodl-airflow-webserver airflow dags list-import-errors   # phai "No data found"
@@ -487,14 +544,19 @@ uv run scripts/ingest/ingest_api.py       # tuong tu cho cac script ingest
 6. **Airflow dùng port 8081 thay vì 8080 mặc định** — nếu copy lệnh/tài liệu Airflow chuẩn từ
    nguồn khác (hay từ `AIRFLOW_WEBSERVER_PORT` trong `.env`), cần nhớ đổi port khi test thủ
    công, tránh nhầm với port 8080 của project khác trên máy.
-7. **Danh sách người ngoài nhóm chưa kiểm thử được:** README hướng dẫn chạy từ máy sạch (Phase
-   7.3) chưa viết — hiện mới có hướng dẫn rải rác trong `PROJECT_CHECKLIST.md`/tài liệu này.
+7. **[ĐÃ VIẾT]** `README.md` đã có hướng dẫn đầy đủ chạy từ máy sạch (clone → `.env` →
+   dataset → `docker compose up` → Star Schema → trigger DAG) — chưa test thật trên máy thứ 2
+   hoàn toàn mới (chỉ test lại trên chính máy này sau khi daemon/container restart).
 8. **FastAPI `/products` chậm ở lần gọi đầu tiên sau mỗi lần container khởi động lại** (~60–90s,
    do `openpyxl` parse file Excel 45MB) — không phải lỗi, nhưng nếu demo trực tiếp nên gọi
    `/products` 1 lần "làm nóng" trước khi người chấm xem, hoặc giải thích rõ trong demo.
 9. **Dependency mới `psycopg2-binary`** đã thêm vào `pyproject.toml`/`uv.lock` qua `uv add` —
    máy khác cần chạy `uv sync` (hoặc tương đương) để có dependency này trước khi chạy
    `scripts/ingest/ingest_database.py`.
+10. **[ĐÃ XONG — 2026-10-24]** Phase 4 nay đã đầy đủ 4.1+4.2+4.3+4.4 (Roll-up Ngày/Tháng/
+    Quý/Năm, Slice, Dice, Pivot, tổng hợp 13 view) — không còn thiếu theo checklist gốc. Giới
+    hạn còn lại chỉ là phạm vi hẹp: Pivot mới làm Quốc gia × Năm, chưa làm Thời gian × Sản
+    phẩm (4.905 sản phẩm quá nhiều cột cho 1 pivot đọc được).
 10. **`datalake/raw/`, `datalake/processed/`** đã thêm vào `.gitignore` — dữ liệu trong đó
     *không* được commit, máy khác cần tự chạy `scripts/ingest/run_all.py` để tái tạo. Chỉ
     `datalake/metadata/ingest_log.csv` được commit.

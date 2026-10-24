@@ -192,6 +192,9 @@ services:
     command:
       - -c
       - |
+        # Phase 6.1 - apache/superset image khong kem san driver Postgres;
+        # can de Superset ket noi postgres-dw (xem docs/06_superset_dashboard.md).
+        pip install --no-cache-dir "psycopg2-binary>=2.9.13"
         superset db upgrade
         superset fab create-admin --username "$${_SUPERSET_ADMIN_USER}" --password "$${_SUPERSET_ADMIN_PASSWORD}" \
           --firstname Admin --lastname User --email admin@example.com || true

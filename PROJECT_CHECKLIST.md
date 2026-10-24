@@ -3,17 +3,16 @@
 > Đồ án môn Kho dữ liệu và Khai phá dữ liệu — PTIT — Nhóm 3 thành viên.
 > Trạng thái file: Kế hoạch & checklist, đã đối chiếu với code thực tế.
 > **Đã có code**: khảo sát dữ liệu (0.1), RFM/K-Means (5.1–5.4) chạy thật có kết quả kiểm
-> chứng, **Phase 1 (Data Lake & 3 nguồn ingest) đã hoàn thành và kiểm thử thật** (API/File/
-> Database + Data Lake + ingest log — xem `scripts/ingest/`). **Phase 3.1+3.2 (Star Schema +
-> DDL trên PostgreSQL DW) đã có và kiểm thử thật** (5 bảng, PK/FK/CHECK đúng thiết kế, chạy
-> lại an toàn — xem `sql/001_create_star_schema.sql`, `docs/03_star_schema.md`), **DW vẫn
-> rỗng dữ liệu nghiệp vụ** (đúng phạm vi Phase 3.1/3.2, chưa làm 3.3/Phase 2 Load). **Hạ tầng
-> Docker Compose (0.2) đã dựng và kiểm thử healthy trên 1 máy** (Postgres×3, Airflow, FastAPI,
-> Superset), còn thiếu xác nhận của các thành viên khác. **Toàn bộ cụm ETL (Phase 2.1–2.5 +
-> 3.3) đã chạy thành công đầu-cuối thật qua DAG `retail_online_ii_etl`** (Extract → Transform
-> → Load → Validate, tất cả `SUCCESS` trong 1 lần chạy qua scheduler, `fact_sales = 1,003,670`
-> dòng, mọi kiểm tra Phase 3.3 PASS). **Phase 4 (OLAP), 6 (dashboard), 5.5 (nạp cluster vào
-> DW) chưa bắt đầu.** Chi tiết đối chiếu:
+> chứng, **Phase 1 (Data Lake & 3 nguồn ingest)**, **Phase 2.1–2.5 (DAG Airflow Extract →
+> Transform → Load, idempotent)** và **Phase 3.1–3.3 (Star Schema, DDL, nạp + xác thực dữ
+> liệu thật)** đã hoàn thành và kiểm thử thật đầu-cuối qua DAG `retail_online_ii_etl`
+> (`fact_sales = 1.003.670` dòng, mọi kiểm tra Phase 3.3 PASS). **Phase 4 (OLAP) đã hoàn
+> thành đầy đủ 4.1–4.4 (Roll-up Ngày/Tháng/Quý/Năm, Slice, Dice, Pivot), kiểm thử thật khớp
+> tuyệt đối với `fact_sales`, chạy idempotent** — xem `sql/002_olap_views.sql` (13 view),
+> `docs/04_olap.md`. **Hạ tầng Docker Compose (0.2) đã dựng và kiểm thử healthy trên 1
+> máy**, còn thiếu xác nhận của các thành
+> viên khác. **Phase 5.5 (nạp cluster vào DW), Phase 6 (Superset dashboard) chưa bắt đầu.**
+> Chi tiết đối chiếu:
 > [`docs/PROJECT_GAP_ANALYSIS.md`](docs/PROJECT_GAP_ANALYSIS.md),
 > [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) (tài liệu bàn giao đầy đủ).
 
@@ -451,100 +450,131 @@ Ký hiệu trạng thái: `[ ]` Chưa bắt đầu · `[~]` Đang làm · `[x]` 
 
 ### Phase 4 — OLAP
 
-- [ ] **4.1 Viết query Roll-up/Drill-down (theo thời gian)**
-  - Phụ trách: TV2 | Công cụ: SQL (GROUP BY ROLLUP hoặc GROUP BY nhiều cấp)
-  - Đầu vào: DW đã có dữ liệu
-  - Đầu ra: Query doanh thu theo Năm → Quý → Tháng → Ngày
-  - Tiêu chí nghiệm thu: Query chạy đúng, kết quả tổng khớp con số tổng Revenue toàn bộ
+- [x] **4.1 Viết query Roll-up/Drill-down (theo thời gian)**
+  - Phụ trách: TV2 | Công cụ: SQL (view, GROUP BY nhiều cấp độc lập theo ngày/tháng/quý/năm)
+  - Đầu vào: DW đã có dữ liệu (`fact_sales` = 1.003.670 dòng)
+  - Đầu ra: [`sql/002_olap_views.sql`](sql/002_olap_views.sql) — `v_olap_sales_daily` (mới bổ
+    sung, hoàn thiện phân cấp), `v_olap_sales_monthly`, `v_olap_sales_quarterly`,
+    `v_olap_sales_yearly` (kèm % tăng trưởng MoM/YoY) — đủ **Năm → Quý → Tháng → Ngày**.
+  - **Đã kiểm thử thật (2026-10-24):** `sum(total_revenue)`/`sum(fact_row_count)` của cả 4
+    mức = **19.659.453,86** / **1.003.670** — khớp tuyệt đối với `fact_sales` trực tiếp. Đối
+    chiếu Ngày→Tháng (01/2010): 612.605,50 khớp cả 2 cách tính.
+  - Tiêu chí nghiệm thu: **Đạt**
   - Phụ thuộc: 3.3
 
-- [ ] **4.2 Viết query Slice/Dice (sản phẩm, quốc gia, khách hàng)**
+- [x] **4.2 Viết query Slice/Dice (sản phẩm, quốc gia, khách hàng)**
   - Phụ trách: TV2
-  - Đầu ra: Query doanh thu theo sản phẩm, theo quốc gia, kết hợp 2 chiều (dice)
-  - Tiêu chí nghiệm thu: Kết quả đối chiếu thủ công với vài dòng dữ liệu gốc (spot-check)
+  - Đầu ra: **Slice** — `v_olap_sales_by_country`, `v_olap_product_revenue` (+
+    `v_olap_top10_products`), `v_olap_customer_revenue` (+ `v_olap_top10_customers`, loại dòng
+    thiếu Customer ID) + `v_olap_sales_missing_customer` (mới bổ sung, làm rõ phần bị loại).
+    **Dice** (mới bổ sung) — `v_olap_dice_country_year` (Quốc gia × Năm).
+  - **Đã kiểm thử thật (2026-10-24):** Slice quốc gia/sản phẩm khớp tuyệt đối
+    19.659.453,86/1.003.670; Slice khách hàng (17.082.085,77/776.857) + phần loại NULL
+    (2.577.368,09/226.813) = đúng tổng toàn kho — không mất, không trùng dữ liệu. **Dice**:
+    tổng theo năm của `v_olap_dice_country_year` khớp **tuyệt đối từng năm** (2009/2010/2011)
+    với `v_olap_sales_yearly`; JOIN đồng thời 2 dimension vẫn giữ đúng 1.003.670 dòng (không
+    nhân bản). Spot-check thủ công top 1 sản phẩm/khách hàng khớp 100% — xem
+    `docs/04_olap.md` mục 5–6.
+  - Tiêu chí nghiệm thu: **Đạt** (cả Slice và Dice)
   - Phụ thuộc: 3.3
 
-- [ ] **4.3 Viết query Pivot (ma trận thời gian x quốc gia hoặc sản phẩm)**
+- [x] **4.3 Viết query Pivot (ma trận thời gian x quốc gia hoặc sản phẩm)**
   - Phụ trách: TV2
-  - Đầu ra: Query dùng `crosstab` (tablefunc extension) hoặc pivot bằng SQL CASE WHEN
-  - Tiêu chí nghiệm thu: Bảng pivot hiển thị đúng, tổng theo hàng/cột khớp 4.1/4.2
+  - Đầu ra: `v_olap_pivot_country_by_year` — ma trận **Quốc gia (hàng) × Năm 2009/2010/2011
+    (cột)**, dùng `SUM(CASE WHEN ...)` (không cần extension `tablefunc`/`crosstab`). 3 năm là
+    giá trị thật xác minh từ `dim_date` (không bịa).
+  - **Đã kiểm thử thật (2026-10-24):** đối chiếu **tổng hàng** — 0/43 quốc gia có
+    `revenue_2009+revenue_2010+revenue_2011 ≠ total_revenue`; đối chiếu **tổng cột** —
+    `SUM(revenue_2009/2010/2011)` khớp tuyệt đối `v_olap_sales_yearly` từng năm, tổng toàn
+    bảng = 19.659.453,86.
+  - **Phạm vi:** chỉ làm Quốc gia × Năm (không làm Thời gian × Sản phẩm vì 4.905 sản phẩm quá
+    nhiều cột cho pivot đọc được — ghi rõ trong `docs/04_olap.md` mục 12).
+  - Tiêu chí nghiệm thu: **Đạt**
   - Phụ thuộc: 4.1, 4.2
 
-- [ ] **4.4 Tổng hợp bộ query OLAP để dùng cho Dashboard**
+- [x] **4.4 Tổng hợp bộ query OLAP để dùng cho Dashboard**
   - Phụ trách: TV2
-  - Đầu ra: File `olap_queries.sql` tập hợp tất cả query đã kiểm thử, sẵn sàng làm nguồn cho Superset chart
-  - Tiêu chí nghiệm thu: File chạy được nguyên khối không lỗi
+  - Đầu ra: [`sql/002_olap_views.sql`](sql/002_olap_views.sql) — **13 view**, đầy đủ cả
+    4.1+4.2+4.3 (roll-up Ngày/Tháng/Quý/Năm, slice quốc gia/sản phẩm/khách hàng + top 10,
+    dice quốc gia×năm, pivot quốc gia×năm, KPI tổng quan). Phân loại rõ "dashboard core" (dùng
+    trực tiếp cho Superset) và "view minh họa OLAP" (Dice/Pivot, phục vụ giải thích báo cáo)
+    — xem `docs/04_olap.md` mục 9.
+  - **Đã kiểm thử thật:** chạy nguyên khối file **2 lần liên tiếp** (lần 1: 13×`CREATE VIEW`;
+    lần 2: vẫn 13×`CREATE VIEW` không lỗi, idempotent — `CREATE OR REPLACE VIEW`, không tạo
+    đối tượng trùng).
+  - Tiêu chí nghiệm thu: **Đạt**
   - Phụ thuộc: 4.1, 4.2, 4.3
 
 ### Phase 5 — Data Mining (RFM + K-Means)
 
-- [~] **5.1 Tính toán đặc trưng RFM**
+- [x] **5.1 Tính toán đặc trưng RFM**
   - Phụ trách: TV3 | Công cụ: Python, Pandas, SQL (đọc từ DW)
   - Đầu vào: Fact_Sales + Dim_Customer đã nạp
-  - Đầu ra: [`scripts/03_rfm.py`](scripts/03_rfm.py) → `data/processed/rfm.csv`, 5,853 khách hàng, R/F/M không âm (đã chạy lại xác minh 2026-10-23, khớp 100% báo cáo cũ)
-  - Tiêu chí nghiệm thu: Đạt về mặt số liệu, **nhưng input hiện đọc từ `data/processed/transactions_clean.csv`, chưa đọc từ DW** (DW chưa tồn tại — Phase 3 chưa làm). Đây là prototype/baseline, cần làm lại bước đọc dữ liệu khi Phase 3 xong — xem `docs/PROJECT_GAP_ANALYSIS.md` mục 3.1
-  - Phụ thuộc: 3.3 (chưa đáp ứng — xem ghi chú trên)
+  - Đầu ra: [`scripts/mining/rfm_dw.py`](scripts/mining/rfm_dw.py) (mới, đọc trực tiếp `fact_sales JOIN dim_customer` qua SQL — không sửa baseline `scripts/03_rfm.py`) → `data/processed/rfm_from_dw.csv`, 5,853 khách hàng, R/F/M không âm. Đã chạy thật 2026-10-24, đối chiếu baseline (`rfm.csv`): 0 khách hàng lệch, lệch Monetary tối đa 0.002 (sai số dấu phẩy động) — xem `docs/05_rfm_kmeans_dw.md` mục 2
+  - Tiêu chí nghiệm thu: Đạt — input đã đọc từ DW (Fact_Sales + Dim_Customer), không còn là prototype CSV. `scripts/03_rfm.py` + `rfm.csv` baseline vẫn giữ nguyên làm tham chiếu
+  - Phụ thuộc: 3.3 (đáp ứng)
 
 - [x] **5.2 Chuẩn hóa đặc trưng**
   - Phụ trách: TV3 | Công cụ: Scikit-learn (StandardScaler hoặc log-transform trước khi scale do Monetary lệch phải)
   - Đầu vào: 5.1
-  - Đầu ra: [`scripts/04_kmeans.py`](scripts/04_kmeans.py) — `log1p(Frequency)`, `log1p(Monetary)` + `StandardScaler`
-  - Tiêu chí nghiệm thu: Đạt (đã chạy thật, có trong `docs/01_bao_cao_tien_do.md` mục 5)
+  - Đầu ra: [`scripts/04_kmeans.py`](scripts/04_kmeans.py) (baseline) — `log1p(Frequency)`, `log1p(Monetary)` + `StandardScaler`; tái áp dụng cho dữ liệu DW ở [`scripts/mining/cluster_dw.py`](scripts/mining/cluster_dw.py)
+  - Tiêu chí nghiệm thu: Đạt (đã chạy thật, có trong `docs/01_bao_cao_tien_do.md` mục 5 và `docs/05_rfm_kmeans_dw.md` mục 3)
   - Phụ thuộc: 5.1
 
 - [x] **5.3 Thử nhiều K và đánh giá Silhouette Score**
   - Phụ trách: TV3 | Công cụ: Scikit-learn K-Means, silhouette_score
   - Đầu vào: 5.2
-  - Đầu ra: Bảng Silhouette Score K=2..10 + [`docs/silhouette_scores.png`](docs/silhouette_scores.png); chọn K=4 (lý do nghiệp vụ, không chỉ silhouette cao nhất — K=2 cao nhất nhưng ít ý nghĩa phân khúc)
-  - Tiêu chí nghiệm thu: Đạt — có số liệu từng K và lý giải rõ lựa chọn K=4 trong `docs/01_bao_cao_tien_do.md` mục 5
+  - Đầu ra: Bảng Silhouette Score K=2..10 + [`docs/silhouette_scores.png`](docs/silhouette_scores.png) (baseline CSV) và [`data/processed/silhouette_scores_from_dw.csv`](data/processed/silhouette_scores_from_dw.csv) + [`docs/silhouette_scores_from_dw.png`](docs/silhouette_scores_from_dw.png) (DW); chọn K=4 (lý do nghiệp vụ, không chỉ silhouette cao nhất — K=2 cao nhất nhưng ít ý nghĩa phân khúc)
+  - Tiêu chí nghiệm thu: Đạt — Silhouette K=4 tính lại từ DW = 0.3611, giống tuyệt đối baseline (xem `docs/05_rfm_kmeans_dw.md` mục 3) — đã tính lại thật, không giả định K=4 là tối ưu
   - Phụ thuộc: 5.2
 
 - [x] **5.4 Gán cụm và diễn giải đặc điểm từng cụm**
   - Phụ trách: TV3
   - Đầu vào: Model K-Means đã chọn ở 5.3
-  - Đầu ra: `data/processed/customer_segments.csv` (nhãn K=2 và K=4); mô tả 4 cụm (VIP, trung thành, mới/ít tương tác, nguy cơ rời bỏ) với R/F/M trung bình từng cụm
-  - Tiêu chí nghiệm thu: Đạt — bảng mô tả đầy đủ trong `docs/01_bao_cao_tien_do.md` mục 5, số liệu không mâu thuẫn
+  - Đầu ra: `data/processed/customer_segments.csv` (baseline, K=2/K=4) và `data/processed/customer_segments_from_dw.csv` (DW, K=2/K=4 + `segment_name`); mô tả 4 cụm (VIP 947, trung thành 1.875, mới/ít tương tác 1.397, nguy cơ rời bỏ 1.634) với R/F/M trung bình từng cụm — giống tuyệt đối baseline
+  - Tiêu chí nghiệm thu: Đạt — bảng mô tả đầy đủ trong `docs/01_bao_cao_tien_do.md` mục 5 và `docs/05_rfm_kmeans_dw.md` mục 3, số liệu không mâu thuẫn
   - Phụ thuộc: 5.3
 
-- [ ] **5.5 Nạp kết quả phân cụm vào DW**
+- [x] **5.5 Nạp kết quả phân cụm vào DW**
   - Phụ trách: TV3 (phối hợp TV2 để thêm cột/bảng)
-  - Công cụ: SQL/Pandas to_sql
+  - Công cụ: SQL/psycopg2 UPSERT
   - Đầu vào: 5.4
-  - Đầu ra: Bảng `Dim_Customer` có thêm cột `cluster_label` hoặc bảng `Customer_Segment` riêng
-  - Tiêu chí nghiệm thu: Superset có thể query được cột cluster
+  - Đầu ra: Bảng `customer_segment` riêng (không ALTER `Dim_Customer`) — [`sql/003_customer_segment.sql`](sql/003_customer_segment.sql) + [`scripts/mining/load_segments_dw.py`](scripts/mining/load_segments_dw.py). Đã chạy thật 2026-10-24: 5.853 dòng, 0 orphan FK, UPSERT chạy lại lần 2 vẫn 5.853 dòng (không trùng lặp), DDL chạy lại idempotent (NOTICE skip, không lỗi)
+  - Tiêu chí nghiệm thu: Đạt — Superset query được `GROUP BY segment_name`/`cluster_label` thành công (đã kiểm thử bằng `psql`, xem `docs/05_rfm_kmeans_dw.md` mục 4). Superset chưa được kết nối thật (thuộc Phase 6.1, chưa triển khai)
   - Phụ thuộc: 5.4, 3.2
 
 ### Phase 6 — Dashboard (Superset)
 
-- [ ] **6.1 Kết nối Superset với PostgreSQL DW**
+- [x] **6.1 Kết nối Superset với PostgreSQL DW**
   - Phụ trách: TV2 | Công cụ: Superset
-  - Tiêu chí nghiệm thu: Superset kết nối thành công, duyệt được danh sách bảng DW
+  - Đầu ra: Database connection "Retail DW" tạo qua REST API (`scripts/superset/provision_superset.py`), driver `psycopg2-binary` thêm vào container Superset (`docker-compose.yml`). Đã test `POST /api/v1/database/test_connection/` → OK trước khi tạo
+  - Tiêu chí nghiệm thu: **Đạt** — kết nối thành công, 5 dataset (view OLAP + `customer_segment`) duyệt được qua API
   - Phụ thuộc: 3.3
 
-- [ ] **6.2 Chart doanh thu theo thời gian/sản phẩm/quốc gia**
+- [x] **6.2 Chart doanh thu theo thời gian/sản phẩm/quốc gia**
   - Phụ trách: TV2
-  - Đầu vào: 4.4 (OLAP queries) làm dataset/SQL Lab query
-  - Đầu ra: 3 chart tương ứng
-  - Tiêu chí nghiệm thu: Chart hiển thị đúng số liệu khớp OLAP đã kiểm thử
+  - Đầu vào: 4.4 (OLAP queries) làm dataset
+  - Đầu ra: 3 chart — "Doanh thu theo tháng" (`v_olap_sales_daily`), "Doanh thu theo quốc gia" (`v_olap_sales_by_country`), "Top 10 sản phẩm theo doanh thu" (`v_olap_top10_products`)
+  - Tiêu chí nghiệm thu: **Đạt** — đã chạy `scripts/superset/verify_charts.py`, đọc lại `params` đã lưu của từng chart và gọi `/api/v1/chart/data` thật, số liệu khớp OLAP đã kiểm thử (tổng doanh thu theo tháng = 19.659.453,86; UK cao nhất = 16.806.060,61)
   - Phụ thuộc: 6.1, 4.4
 
-- [ ] **6.3 Chart số lượng khách hàng và tỷ lệ từng cụm**
+- [x] **6.3 Chart số lượng khách hàng và tỷ lệ từng cụm**
   - Phụ trách: TV2 (phối hợp TV3 cung cấp ý nghĩa cụm)
   - Đầu vào: 5.5
-  - Đầu ra: Pie/Bar chart tỷ lệ cụm
-  - Tiêu chí nghiệm thu: Tổng % các cụm = 100%, khớp số lượng khách hàng ở 5.4
+  - Đầu ra: Pie chart "Số khách hàng theo phân khúc" trên `customer_segment`
+  - Tiêu chí nghiệm thu: **Đạt** — đã chạy thật: 947 (VIP) + 1.875 (trung thành) + 1.397 (mới/ít tương tác) + 1.634 (nguy cơ rời bỏ) = 5.853, khớp số khách hàng ở 5.4
   - Phụ thuộc: 6.1, 5.5
 
-- [ ] **6.4 Chart so sánh chi tiêu/tần suất theo cụm**
+- [x] **6.4 Chart so sánh chi tiêu/tần suất theo cụm**
   - Phụ trách: TV2 (phối hợp TV3)
-  - Đầu ra: Bar chart R/F/M trung bình theo cụm
-  - Tiêu chí nghiệm thu: Số liệu khớp bảng mô tả cụm ở 5.4
+  - Đầu ra: Bar chart "RFM trung bình theo phân khúc" (AVG(monetary), AVG(frequency) theo `segment_name`)
+  - Tiêu chí nghiệm thu: **Đạt** — số liệu khớp bảng mô tả cụm ở `docs/05_rfm_kmeans_dw.md` (VIP: Monetary≈12.819,5, Frequency≈22,2)
   - Phụ thuộc: 6.3
 
-- [ ] **6.5 Gộp thành Dashboard hoàn chỉnh**
+- [x] **6.5 Gộp thành Dashboard hoàn chỉnh**
   - Phụ trách: TV2
-  - Đầu ra: 1 Superset Dashboard chứa toàn bộ chart ở 6.2–6.4, có filter theo thời gian/quốc gia
-  - Tiêu chí nghiệm thu: Dashboard load không lỗi, filter hoạt động đúng
+  - Đầu ra: Dashboard "Online Retail II - Tong quan kinh doanh" (`id=1`) — 6 chart (gồm thêm "KPI tổng quan kho dữ liệu"), 2 native filter (Khoảng thời gian trên `full_date`, Quốc gia trên `country_name`)
+  - Tiêu chí nghiệm thu: **Đạt về API/cấu hình** — dashboard tạo thành công, 6 chart gắn đúng, idempotent (chạy lại script 2 lần không tạo trùng object). **Chưa xác nhận bằng mắt trong trình duyệt** (môi trường này không có browser) — xem `docs/06_superset_dashboard.md` mục 6 cho bước thủ công cần làm (mở UI, kiểm tra trực quan, chụp ảnh minh chứng cho Phase 7.2)
   - Phụ thuộc: 6.2, 6.3, 6.4
 
 ### Phase 7 — Kiểm thử tổng, báo cáo, demo (bắt buộc trước khi nộp)
