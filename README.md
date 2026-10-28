@@ -347,15 +347,20 @@ chạy). **5 chart** (đã xác minh thật qua `/api/v1/chart/data`, số liệ
 | Chart | Loại | Nội dung |
 |---|---|---|
 | Apriori - KPI tong quan | Bảng (aggregate) | Tổng số luật, số luật `lift>1`, confidence/lift trung bình |
-| Apriori - Top 10 luat theo Lift | Bảng | 10 luật có `lift` cao nhất |
-| Apriori - Top 10 luat theo Confidence | Bảng | 10 luật có `confidence` cao nhất |
-| Apriori - Scatter Support vs Confidence | Scatter (`echarts_timeseries_scatter`) | Phân bố support × confidence trung bình |
-| Apriori - Bang chi tiet luat ket hop | Bảng | Toàn bộ luật, sắp xếp theo `lift` giảm dần |
+| Apriori - Top 10 luat theo Lift | Bảng (aggregate, sort `Lift` giảm dần) | 10 luật có `lift` cao nhất |
+| Apriori - Top 10 luat theo Confidence | Bảng (aggregate, sort `Confidence` giảm dần) | 10 luật có `confidence` cao nhất |
+| Apriori - Phan bo Support, Confidence, Lift theo luat | Bảng (aggregate, sort `Lift` tăng dần) | Toàn bộ 101 luật |
+| Apriori - Bang chi tiet luat ket hop | Bảng (aggregate, sort `Lift` giảm dần) | Toàn bộ 101 luật |
 
-**Lưu ý đã biết (xem đầy đủ ở `docs/08_apriori_mba.md` mục 11):** chart Scatter không mã hóa
-`lift` bằng màu/kích thước vì Superset 4.1.1 không hỗ trợ bubble-size cho viz_type này; dashboard
-đã xác minh qua API thật nhưng **chưa mở trình duyệt để xem bằng mắt** (môi trường phát triển
-không có browser — giống hạn chế đã có ở dashboard chính, xem `docs/06_superset_dashboard.md`).
+**Lưu ý quan trọng (xem đầy đủ ở `docs/08_apriori_mba.md` mục 12):** lượt tạo dashboard đầu tiên
+có **lỗi hiển thị thật** (chỉ chart KPI hiện ra, 4 chart còn lại không hiện dù API báo thành
+công) — nguyên nhân xác định được là tham số `order_by_cols` (chế độ `query_mode: raw`) không
+hoạt động đúng trong bản Superset này; đã sửa bằng cách chuyển toàn bộ sang `query_mode:
+aggregate` + `timeseries_limit_metric`/`order_desc` — đúng cơ chế đã hoạt động ổn định ở các
+chart `dist_bar` của dashboard chính. Chart Scatter dự kiến ban đầu cũng đổi thành bảng vì không
+thể xác minh được việc hiển thị của `echarts_timeseries_scatter` trong môi trường không có trình
+duyệt. **Dashboard chưa được xác nhận bằng mắt sau khi sửa** — người dùng cần tải lại trang
+(hard refresh) và tự kiểm tra; nếu vẫn lỗi, xem hướng dẫn chẩn đoán tiếp ở mục 12 của tài liệu.
 
 Chi tiết cách chọn ngưỡng `min_support`/`min_confidence`, toàn bộ số liệu kiểm thử (gồm cả lượt
 kiểm thử DW thật với Docker và dashboard Superset), thiết kế bảng `market_basket_rules`, và giới

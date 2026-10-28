@@ -93,8 +93,13 @@ def ensure_datasets(c: SupersetClient, db_id: int) -> dict[str, int]:
     return ids
 
 
-def ensure_chart(c: SupersetClient, slice_name: str, viz_type: str, ds_id: int, params: dict) -> int:
-    existing = c.find_one("chart", "slice_name", slice_name)
+def ensure_chart(
+    c: SupersetClient, slice_name: str, viz_type: str, ds_id: int, params: dict, lookup_name: str | None = None
+) -> int:
+    """lookup_name: ten CU dung de TIM chart co san (vd khi doi ten/doi viz_type
+    1 chart da ton tai) - mac dinh = slice_name (truong hop binh thuong, khong
+    doi ten). Dung de SUA 1 chart tai cho (PUT), KHONG tao chart trung ten moi."""
+    existing = c.find_one("chart", "slice_name", lookup_name or slice_name)
     body = {
         "slice_name": slice_name,
         "viz_type": viz_type,
@@ -359,11 +364,59 @@ def ensure_apriori_dataset(c: SupersetClient, db_id: int) -> int:
     return resp["id"]
 
 
+def _rule_metrics() -> list[dict]:
+    return [
+        metric("support", "MAX", "Support"),
+        metric("confidence", "MAX", "Confidence"),
+        metric("lift", "MAX", "Lift"),
+    ]
+
+
+def _top_n_table_params(datasource: str, order_metric_label: str, order_desc: bool, row_limit: int) -> dict:
+    """Bang top-N theo 1 metric, dung dung co che da xac minh HOAT DONG trong
+    dashboard nay (groupby + timeseries_limit_metric + order_desc - giong het
+    cac chart dist_bar Phase 6 da on dinh), KHONG dung "order_by_cols" (xem
+    ghi chu sua loi ben duoi build_apriori_charts)."""
+    order_metric = next(m for m in _rule_metrics() if m["label"] == order_metric_label)
+    return {
+        "datasource": datasource,
+        "viz_type": "table",
+        "query_mode": "aggregate",
+        "groupby": ["antecedent_items", "consequent_items"],
+        "metrics": _rule_metrics(),
+        "timeseries_limit_metric": order_metric,
+        "order_desc": order_desc,
+        "adhoc_filters": [],
+        "row_limit": row_limit,
+    }
+
+
 def build_apriori_charts(c: SupersetClient, ds_id: int) -> dict[str, int]:
-    """4 chart cho Phase 8.1 (KPI, top-10 theo Lift, top-10 theo Confidence,
-    scatter Support x Confidence, bang chi tiet toan bo luat) tren dataset
-    market_basket_rules. Da xac minh thuc te tung dang query qua
-    /api/v1/chart/data truoc khi luu params (xem docs/08_apriori_mba.md)."""
+    """5 chart cho Phase 8.1 (KPI, top-10 theo Lift, top-10 theo Confidence,
+    phan bo theo Support, bang chi tiet toan bo luat) tren dataset
+    market_basket_rules.
+
+    SUA LOI (2026-10-28, sau khi nguoi dung bao chi thay chart KPI hien thi,
+    4 chart con lai KHONG hien ra trong dashboard): da kiem tra ky bang
+    REST API - dataset/chart/dashboard association, position_json deu dung
+    (xem docs/08_apriori_mba.md muc 12 de biet chi tiet qua trinh dieu tra).
+    Nguyen nhan xac dinh duoc qua so sanh truc tiep voi 1 chart "table" cu DA
+    HOAT DONG on dinh (chart "KPI tong quan kho du lieu", Phase 6): chart do
+    dung "query_mode": "raw" + "order_by_cols": [] (RONG). 3 chart loi
+    (apriori_top_lift/top_confidence/detail) la "table" raw voi
+    "order_by_cols" KHONG RONG - day la diem khac biet duy nhat so voi chart
+    da hoat dong. Chart scatter (echarts_timeseries_scatter) cung khong hien
+    - vi khong the xac minh rendering qua API (chi xac minh duoc tang du
+    lieu, khong xac minh duoc tang frontend), thay bang dang "table"
+    (aggregate) cung co che da xac nhan on dinh, thay vi tiep tuc dung 1
+    viz_type chua the kiem chung duoc trong moi truong nay.
+
+    Sua: 3 bang top-N chuyen sang "query_mode": "aggregate" +
+    "timeseries_limit_metric" + "order_desc" - CHINH LA co che sap xep da
+    dung thanh cong trong cac chart dist_bar on dinh cua Phase 6
+    (vd "Doanh thu theo quoc gia", "Top 10 san pham theo doanh thu") - khong
+    phai co che moi, tu suy doan.
+    """
     charts: dict[str, int] = {}
     datasource = f"{ds_id}__table"
 
@@ -393,15 +446,7 @@ def build_apriori_charts(c: SupersetClient, ds_id: int) -> dict[str, int]:
         "Apriori - Top 10 luat theo Lift",
         "table",
         ds_id,
-        {
-            "datasource": datasource,
-            "viz_type": "table",
-            "query_mode": "raw",
-            "all_columns": APRIORI_RULE_COLUMNS,
-            "order_by_cols": [json.dumps(["lift", False])],
-            "adhoc_filters": [],
-            "row_limit": 10,
-        },
+        _top_n_table_params(datasource, "Lift", order_desc=True, row_limit=10),
     )
 
     charts["apriori_top_confidence"] = ensure_chart(
@@ -409,42 +454,19 @@ def build_apriori_charts(c: SupersetClient, ds_id: int) -> dict[str, int]:
         "Apriori - Top 10 luat theo Confidence",
         "table",
         ds_id,
-        {
-            "datasource": datasource,
-            "viz_type": "table",
-            "query_mode": "raw",
-            "all_columns": APRIORI_RULE_COLUMNS,
-            "order_by_cols": [json.dumps(["confidence", False])],
-            "adhoc_filters": [],
-            "row_limit": 10,
-        },
+        _top_n_table_params(datasource, "Confidence", order_desc=True, row_limit=10),
     )
 
-    # Scatter Support (truc X, "Generic X-Axis" - khong can cot thoi gian) x
-    # Confidence trung binh (truc Y). KHONG the hien lift bang bubble size/mau
-    # vi echarts_timeseries_scatter (ban Superset 4.1.1 dang dung) khong ho tro
-    # 1 chieu lien tuc thu 3 cho scatter (chi co X + (các) metric Y dang
-    # "duong thoi gian" ve thanh diem roi rac) - da thu nghiem bubble_chart
-    # (legacy NVD3) va cac bien the khac, khong co dang nao ho tro ca 3 chieu
-    # lien tuc cung luc trong ban nay; lift van xem duoc qua 2 bang Top-10 va
-    # KPI o tren. Ghi ro trong docs/08_apriori_mba.md.
-    charts["apriori_scatter"] = ensure_chart(
+    # Thay the chart Scatter (echarts_timeseries_scatter) - xem docstring ham
+    # nay. Dung lai CUNG 1 chart id (lookup_name = ten CU) de KHONG tao chart
+    # trung, chi doi noi dung + doi ten cho dung voi dang bang moi.
+    charts["apriori_support_distribution"] = ensure_chart(
         c,
-        "Apriori - Scatter Support vs Confidence",
-        "echarts_timeseries_scatter",
+        "Apriori - Phan bo Support, Confidence, Lift theo luat",
+        "table",
         ds_id,
-        {
-            "datasource": datasource,
-            "viz_type": "echarts_timeseries_scatter",
-            "x_axis": "support",
-            "x_axis_sort_asc": True,
-            "metrics": [metric("confidence", "AVG", "Confidence trung binh")],
-            "groupby": [],
-            "adhoc_filters": [],
-            "row_limit": 150,
-            "y_axis_format": "SMART_NUMBER",
-            "color_scheme": "supersetColors",
-        },
+        _top_n_table_params(datasource, "Lift", order_desc=False, row_limit=200),
+        lookup_name="Apriori - Scatter Support vs Confidence",
     )
 
     charts["apriori_detail"] = ensure_chart(
@@ -452,15 +474,7 @@ def build_apriori_charts(c: SupersetClient, ds_id: int) -> dict[str, int]:
         "Apriori - Bang chi tiet luat ket hop",
         "table",
         ds_id,
-        {
-            "datasource": datasource,
-            "viz_type": "table",
-            "query_mode": "raw",
-            "all_columns": APRIORI_RULE_COLUMNS,
-            "order_by_cols": [json.dumps(["lift", False])],
-            "adhoc_filters": [],
-            "row_limit": 200,
-        },
+        _top_n_table_params(datasource, "Lift", order_desc=True, row_limit=200),
     )
 
     return charts
@@ -488,7 +502,7 @@ def build_apriori_position_json(chart_ids: dict[str, int]) -> dict:
     }
     row3 = {
         "type": "ROW", "id": "A-ROW-3", "parents": ["A-GRID_ID"],
-        "children": ["CHART-apriori_scatter"],
+        "children": ["CHART-apriori_support_distribution"],
         "meta": {"background": "BACKGROUND_TRANSPARENT"},
     }
     row4 = {
@@ -508,12 +522,17 @@ def build_apriori_position_json(chart_ids: dict[str, int]) -> dict:
         "A-ROW-2": row2,
         "A-ROW-3": row3,
         "A-ROW-4": row4,
-        "CHART-apriori_kpi": chart_component("apriori_kpi", "Apriori - KPI tong quan", 12, 25),
+        # height=50 (mac dinh chuan, giong het dashboard Phase 6) cho TAT CA
+        # chart - khong con dung height=25 rieng cho KPI nhu truoc (da loai
+        # bien so nay khi dieu tra loi, xem docstring build_apriori_charts).
+        "CHART-apriori_kpi": chart_component("apriori_kpi", "Apriori - KPI tong quan", 12),
         "CHART-apriori_top_lift": chart_component("apriori_top_lift", "Apriori - Top 10 luat theo Lift", 6),
         "CHART-apriori_top_confidence": chart_component(
             "apriori_top_confidence", "Apriori - Top 10 luat theo Confidence", 6
         ),
-        "CHART-apriori_scatter": chart_component("apriori_scatter", "Apriori - Scatter Support vs Confidence", 12),
+        "CHART-apriori_support_distribution": chart_component(
+            "apriori_support_distribution", "Apriori - Phan bo Support, Confidence, Lift theo luat", 12
+        ),
         "CHART-apriori_detail": chart_component("apriori_detail", "Apriori - Bang chi tiet luat ket hop", 12, 60),
     }
 

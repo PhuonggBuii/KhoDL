@@ -52,13 +52,19 @@ def query_context_for(chart: dict) -> dict:
         }
     elif viz_type == "table":
         if params.get("query_mode") == "aggregate":
-            # Phase 8.1 - chart KPI (vd Apriori): khong co all_columns, dung
-            # metrics + groupby (co the rong) nhu 1 truy van aggregate thuan.
+            # Phase 8.1 - chart KPI/top-N (vd Apriori): khong co all_columns,
+            # dung metrics + groupby (co the rong). Neu co timeseries_limit_metric
+            # (co che sap xep top-N giong cac chart dist_bar on dinh cua Phase 6),
+            # dung chinh metric do de ORDER BY.
+            orderby = []
+            if params.get("timeseries_limit_metric"):
+                asc = not params.get("order_desc", False)
+                orderby = [[params["timeseries_limit_metric"], asc]]
             q = {
                 "columns": params.get("groupby", []),
                 "metrics": params["metrics"],
                 "groupby": params.get("groupby", []),
-                "orderby": [],
+                "orderby": orderby,
                 "row_limit": params.get("row_limit", 100),
             }
         else:

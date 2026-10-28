@@ -270,62 +270,150 @@ toàn bộ giá trị mặc định `min_support=0.02, min_confidence=0.30, max_
 `datalake/processed/2026-10-23/fact_sales.csv` (hoặc thư mục `datalake/processed/<ngày>/` mới
 nhất nếu đã chạy lại Transform) sẽ cho đúng 323 frequent itemset / 101 luật như mục 6.
 
-## 11. Dashboard Superset — ĐÃ TẠO và xác nhận qua API (2026-10-28, lượt kiểm thử thứ 3)
+## 11. Dashboard Superset — ĐÃ TẠO, PHÁT HIỆN LỖI HIỂN THỊ VÀ ĐÃ SỬA (2026-10-28)
 
 Dashboard **riêng**, tách biệt với dashboard "Online Retail II - Tong quan kinh doanh" (Phase
 6) — không sửa/không xóa dashboard đó. Tạo qua REST API bằng
 [`scripts/superset/provision_superset.py`](../scripts/superset/provision_superset.py) (đã mở
 rộng, tái sử dụng connection `Retail DW` + pattern idempotent có sẵn), kiểm thử bằng
-[`scripts/superset/verify_charts.py`](../scripts/superset/verify_charts.py) (đã mở rộng để hỗ
-trợ `query_mode=aggregate` và `echarts_timeseries_scatter`).
+[`scripts/superset/verify_charts.py`](../scripts/superset/verify_charts.py) (đã mở rộng tương
+ứng).
 
 **Dataset:** đăng ký trực tiếp bảng `market_basket_rules` (không qua view trung gian — bảng đã
 có đủ cột cần thiết).
 
-**5 chart (tất cả đã xác minh qua `/api/v1/chart/data` thật, số liệu khớp `psql` trực tiếp):**
+> **Lượt tạo đầu tiên (xem mục 12) có lỗi: chỉ chart "KPI tong quan" hiển thị, 4 chart còn lại
+> KHÔNG hiện ra trong trình duyệt dù API báo thành công.** Đã điều tra và sửa — xem mục 12 để
+> biết nguyên nhân, cách chẩn đoán, và phần còn lại cần người dùng tự xác nhận bằng mắt.
+
+**5 chart hiện tại (sau khi sửa, tất cả đã xác minh qua `/api/v1/chart/data` thật):**
 
 | # | Tên chart | Loại (`viz_type`) | Nội dung | Kết quả xác minh thật |
 |---|---|---|---|---|
 | 1 | Apriori - KPI tong quan | `table` (aggregate) | Tổng số luật, số luật lift>1, confidence TB, lift TB | `101 / 101 / 0,4856 / 9,179` |
-| 2 | Apriori - Top 10 luat theo Lift | `table` (raw, sort theo `lift` giảm dần) | antecedent/consequent/support/confidence/lift | Top 1: `22697→22698`, lift 24,44 — khớp mục 6 |
-| 3 | Apriori - Top 10 luat theo Confidence | `table` (raw, sort theo `confidence` giảm dần) | Như trên | Top 1: `22698→22697`, confidence 0,836 |
-| 4 | Apriori - Scatter Support vs Confidence | `echarts_timeseries_scatter` | X=`support` (Generic X-Axis, không phải cột thời gian), Y=AVG(`confidence`) | 54 điểm (xem ghi chú dưới) |
-| 5 | Apriori - Bang chi tiet luat ket hop | `table` (raw, sort theo `lift` giảm dần) | Toàn bộ 5 cột, `row_limit=200` | **101/101 dòng**, đúng tổng số luật |
+| 2 | Apriori - Top 10 luat theo Lift | `table` (aggregate, sort theo `Lift` giảm dần) | antecedent/consequent + Support/Confidence/Lift | Top 1: `22698→22697`, lift 24,44 |
+| 3 | Apriori - Top 10 luat theo Confidence | `table` (aggregate, sort theo `Confidence` giảm dần) | Như trên | Top 1: `22698→22697`, confidence 0,836 |
+| 4 | Apriori - Phan bo Support, Confidence, Lift theo luat | `table` (aggregate, sort theo `Lift` tăng dần) | Như trên, toàn bộ 101 luật | **101/101 dòng**, lift nhỏ nhất 2,92 ở đầu bảng |
+| 5 | Apriori - Bang chi tiet luat ket hop | `table` (aggregate, sort theo `Lift` giảm dần) | Như trên, toàn bộ 101 luật | **101/101 dòng**, lift lớn nhất 24,44 ở đầu bảng |
 
-**Ghi chú thiết kế chart Scatter:** Superset 4.1.1 (bản đang dùng) **không có viz_type nào hỗ
-trợ đồng thời 3 chiều liên tục độc lập** (X, Y, kích thước bubble theo `lift`) — đã kiểm tra
-thực tế, không giả định. `echarts_timeseries_scatter` thuộc họ "timeseries" của Superset: trục X
-là khóa GROUP BY (có thể là cột bất kỳ nhờ tính năng "Generic X-Axis", không bắt buộc cột thời
-gian — đã xác minh hoạt động đúng qua `/api/v1/chart/data`), (các) metric là trục Y, **không có
-tham số bubble-size cho chiều thứ 3**. Vì vậy:
-- Chart dùng X=`support`, Y=`AVG(confidence)` — đúng yêu cầu "support so với confidence".
-- `lift` **không** được mã hóa trực quan trong chart này (đã thử nhiều phương án, không có dạng
-  nào trong bản Superset hiện tại hỗ trợ cả 3 chiều cùng lúc) — nhưng vẫn xem được đầy đủ qua
-  chart #1 (KPI, lift trung bình) và chart #2/#5 (giá trị lift cụ thể từng luật).
-- **54 điểm thay vì 101:** một vài luật có `support` trùng giá trị sau khi làm tròn 6 chữ số
-  thập phân (`NUMERIC(8,6)`) — các luật đó được Superset GROUP BY gộp lại, hiển thị
-  `AVG(confidence)` tại điểm X chung đó (tính đúng theo công thức, không bịa số liệu, nhưng mất
-  một phần độ chi tiết so với xem từng luật riêng lẻ — bù lại bằng chart #5 "Bảng chi tiết").
-- Đã xác nhận `"echarts_timeseries_scatter"` là key viz **thật sự tồn tại** trong bundle JS của
-  Superset image đang chạy (`grep` thấy trong
-  `/app/superset/static/assets/8986.*.entry.js` bên trong container) — không phải key tự đặt.
+**Lưu ý:** chart #4 (trước đây dự kiến là scatter plot X=support/Y=confidence) đã đổi thành
+**bảng** sau khi phát hiện `echarts_timeseries_scatter` không hiển thị được trong môi trường
+này (xem mục 12) — đây là 1 trong 2 lựa chọn đã nêu từ đầu ("nếu Superset hỗ trợ... chọn loại
+biểu đồ thay thế phù hợp"). Dữ liệu support/confidence/lift của toàn bộ 101 luật vẫn xem được
+đầy đủ qua chart này (sắp theo lift tăng dần, bổ sung góc nhìn khác với chart #5 sắp giảm dần).
 
-**Idempotency đã xác nhận thật:** chạy `provision_superset.py` 2 lần liên tiếp → lần 2 toàn bộ
-in `Da cap nhat ...` (PUT, không POST mới); `GET /api/v1/dashboard`, `/api/v1/chart`,
-`/api/v1/dataset` sau 2 lần chạy vẫn đúng **2 dashboard, 11 chart (6 cũ + 5 mới), 6 dataset (5
-cũ + 1 mới)** — không trùng lặp. Dashboard "Online Retail II - Tong quan kinh doanh" (Phase 6)
-xác nhận **không đổi** (vẫn đúng 6 chart cũ, không bị thêm/mất chart nào).
+**Idempotency đã xác nhận thật:** chạy `provision_superset.py` nhiều lần liên tiếp (cả trước và
+sau khi sửa lỗi) → các lần sau toàn bộ in `Da cap nhat ...` (PUT, không POST mới); `GET
+/api/v1/dashboard`, `/api/v1/chart`, `/api/v1/dataset` luôn đúng **2 dashboard, 11 chart (6 cũ +
+5 mới), 6 dataset (5 cũ + 1 mới)** — không trùng lặp kể cả khi đổi tên/đổi viz_type 1 chart (dùng
+`lookup_name` để PUT đúng chart cũ theo id, không tạo chart mới — xem mục 12). Dashboard "Online
+Retail II - Tong quan kinh doanh" (Phase 6) xác nhận **không đổi** trong suốt quá trình (vẫn
+đúng 6 chart cũ, không bị thêm/mất chart nào).
 
-**Chưa kiểm thử (cần mở giao diện thủ công):** toàn bộ xác minh ở trên qua REST API
-(`/api/v1/chart/data`, không phải qua UI) — môi trường phát triển **không có trình duyệt**
-(giống hạn chế đã ghi nhận cho dashboard Phase 6, xem `docs/06_superset_dashboard.md` mục 6).
-**Chưa xác nhận bằng mắt** cách dashboard/chart hiển thị thực tế trong UI (bố cục, màu sắc, chú
-giải trục, tooltip) — đặc biệt là chart Scatter vì đây là viz_type phức tạp nhất. Người dùng cần
-mở `http://localhost:8088/superset/dashboard/2/` để tự kiểm tra bằng mắt trước khi dùng cho báo
-cáo/demo chính thức.
+**Chưa kiểm thử (cần mở giao diện thủ công):** môi trường phát triển **không có trình duyệt** —
+toàn bộ xác minh ở trên qua REST API (`/api/v1/chart/data`), không phải qua UI thật. Sau khi sửa
+lỗi ở mục 12, **chưa có xác nhận bằng mắt** rằng cả 5 chart đã hiển thị đúng (chỉ có xác nhận
+gián tiếp rằng cơ chế sắp xếp mới dùng ĐÚNG pattern đã hoạt động ổn định ở dashboard Phase 6).
+Người dùng cần **tải lại trang** (Ctrl+F5/hard refresh để tránh cache cũ) tại
+`http://localhost:8088/superset/dashboard/2/` và tự kiểm tra bằng mắt cả 5 chart trước khi dùng
+cho báo cáo/demo chính thức — nếu vẫn còn chart không hiện, xem mục 12 phần "Nếu vẫn còn lỗi".
 
 **Lệnh chạy:**
 ```bash
 uv run scripts/superset/provision_superset.py   # tao/cap nhat ca 2 dashboard, idempotent
 uv run scripts/superset/verify_charts.py        # doi chieu toan bo 11 chart voi du lieu that
 ```
+
+## 12. Sự cố "chỉ hiện KPI, 4 chart còn lại không hiện" — điều tra và khắc phục (2026-10-28)
+
+### Triệu chứng (người dùng báo cáo)
+Mở `http://localhost:8088/superset/dashboard/2/` chỉ thấy tiêu đề + chart "Apriori - KPI tong
+quan"; 4 chart còn lại (2 bảng Top-10, Scatter, bảng chi tiết) **không hiện ra** — mặc dù lượt
+tạo trước đó báo "đã tạo 5 chart" và các lệnh kiểm thử qua API đều trả kết quả thành công.
+
+### Các bước điều tra thực tế đã làm (chỉ qua REST API + `docker exec`, không có trình duyệt)
+
+1. **Kiểm tra association chart↔dashboard** — `GET /api/v1/dashboard/2`, `GET
+   /api/v1/dashboard/2/charts`, và `GET /api/v1/chart/<id>` cho từng chart riêng lẻ (field
+   `dashboards`): **cả 5 chart đều liên kết đúng với dashboard id=2**, hai chiều, không có chart
+   nào bị thiếu liên kết.
+2. **Kiểm tra `position_json`** — so sánh `position_json` của dashboard 2 (mới) với dashboard 1
+   (Phase 6, đã chạy ổn định) từng trường một: cấu trúc `ROOT_ID → GRID → ROW → CHART` **giống
+   hệt về hình dạng**, mọi tham chiếu ID đều nhất quán (không có tham chiếu treo/thiếu node),
+   `meta.chartId` của cả 5 CHART node đều đúng (7, 8, 9, 10, 11). **Kết luận: layout KHÔNG lỗi**
+   — nếu lỗi layout/traversal thì chart #1 (cũng nằm trong cùng 1 GRID, cùng cơ chế duyệt cây)
+   cũng sẽ không hiện, nhưng thực tế chart #1 **có** hiện.
+3. **Kiểm tra dữ liệu từng chart qua `/api/v1/chart/data`** (dùng đúng `params` đã lưu, giống
+   cách `verify_charts.py` làm): **cả 5 chart đều trả dữ liệu đúng, không lỗi** — kể cả 4 chart
+   "không hiện". Điều này loại trừ khả năng lỗi ở tầng dữ liệu/SQL.
+4. **So sánh có hệ thống với 1 chart "table" CŨ đã hoạt động ổn định** (chart #6 "KPI tong quan
+   kho du lieu", Phase 6): phát hiện khác biệt duy nhất giữa 3 chart bảng bị lỗi
+   (`apriori_top_lift`, `apriori_top_confidence`, `apriori_detail`) và chart cũ đang hoạt động
+   là chart cũ dùng `"query_mode": "raw"` + `"order_by_cols": []` (**RỖNG**), còn 3 chart lỗi
+   dùng `"order_by_cols"` **có giá trị** (để sắp theo `lift`/`confidence`). Đây là manh mối cụ
+   thể, không phải suy đoán chung chung.
+5. **Chart Scatter (`echarts_timeseries_scatter`)** không cùng nhóm nguyên nhân trên (khác hẳn
+   viz_type) — không tìm được bằng chứng xác định rõ nguyên nhân chỉ qua API (dữ liệu vẫn đúng
+   khi gọi thủ công), và **không có cách nào kiểm chứng việc render phía client chỉ bằng
+   API/log** (đã kiểm tra `docker logs khodl-superset` — không có log truy cập HTTP/JS error nào
+   được ghi ra do cấu hình gunicorn hiện tại không bật access log).
+
+### Nguyên nhân xác định (có bằng chứng) và chưa xác định chắc chắn (có suy luận)
+
+- **Xác định có bằng chứng cụ thể:** 3 chart bảng dùng `query_mode: "raw"` + `order_by_cols` có
+  giá trị không hiển thị, trong khi chart bảng cùng loại nhưng `order_by_cols` rỗng thì hiển thị
+  bình thường — sự khác biệt duy nhất đó là `order_by_cols`.
+- **Chưa xác định chắc chắn (chỉ là giả thuyết hợp lý):** chart Scatter không hiển thị **có thể**
+  do cùng nhóm nguyên nhân (thiếu tham số bắt buộc trong `params` mà chỉ frontend kiểm tra, API
+  backend không kiểm tra) — **không khẳng định chắc chắn được nếu không mở trình duyệt**.
+
+### Khắc phục đã áp dụng (tối thiểu, không đổi dashboard Phase 6)
+
+File sửa: [`scripts/superset/provision_superset.py`](../scripts/superset/provision_superset.py),
+[`scripts/superset/verify_charts.py`](../scripts/superset/verify_charts.py). KHÔNG đổi
+`sql/004_market_basket_rules.sql`, KHÔNG đổi dữ liệu trong `market_basket_rules`, KHÔNG đổi bất
+kỳ chart/dashboard nào của Phase 6.
+
+- 3 chart bảng (`apriori_top_lift`, `apriori_top_confidence`, `apriori_detail`): đổi
+  `query_mode` từ `"raw"` sang `"aggregate"`, dùng `groupby` (antecedent_items,
+  consequent_items) + `metrics` (MAX support/confidence/lift) + `timeseries_limit_metric` +
+  `order_desc` để sắp xếp top-N — **đây CHÍNH LÀ cơ chế sắp xếp đã dùng thành công trong các
+  chart `dist_bar` ổn định của Phase 6** ("Doanh thu theo quoc gia", "Top 10 san pham theo doanh
+  thu", xem `scripts/superset/provision_superset.py::build_charts`), không phải cơ chế mới tự
+  nghĩ ra.
+- Chart Scatter (`echarts_timeseries_scatter`): **thay bằng bảng aggregate cùng cơ chế trên**
+  (đổi tên thành "Apriori - Phan bo Support, Confidence, Lift theo luat", sắp theo `lift` tăng
+  dần) — vì không có cách xác minh viz_type đó render đúng trong môi trường không có trình
+  duyệt này, trong khi bảng aggregate thì **có bằng chứng cụ thể** (chart #1 dùng đúng cơ chế
+  này và đã được người dùng xác nhận hiển thị). **KHÔNG tạo chart mới**: dùng tham số
+  `lookup_name` mới thêm vào `ensure_chart()` để tìm đúng chart cũ theo tên cũ
+  ("Apriori - Scatter Support vs Confidence") rồi `PUT` cập nhật tại chỗ (cùng `chart_id=10`) —
+  đã xác nhận qua `GET /api/v1/chart/` sau khi chạy lại: vẫn đúng 11 chart, không có chart thừa.
+
+### Đã xác minh lại qua API sau khi sửa (không chỉ dựa vào "provision thành công")
+
+- `uv run scripts/superset/provision_superset.py`: tất cả 11 chart + 2 dashboard in
+  `Da cap nhat` (không có dòng `Da tao` nào mới) → xác nhận không tạo trùng.
+- `GET /api/v1/dashboard/` → vẫn đúng 2 dashboard; `GET /api/v1/chart/` → vẫn đúng 11 chart,
+  chart id=10 đổi tên đúng như mong đợi, các id khác giữ nguyên.
+- `uv run scripts/superset/verify_charts.py` (đã cập nhật để dựng đúng query cho
+  `query_mode=aggregate` kèm `timeseries_limit_metric`/`order_desc`): **cả 11 chart trả dữ liệu
+  đúng và ĐÃ SẮP XẾP ĐÚNG THỨ TỰ** — chart Top-10-Lift và bảng chi tiết trả lift giảm dần bắt đầu
+  từ 24,44; chart Top-10-Confidence trả confidence giảm dần bắt đầu từ 0,836; chart "Phân bố"
+  trả lift **tăng dần** bắt đầu từ 2,92 (khác chiều sắp xếp so với bảng chi tiết, đúng thiết kế).
+- `GET /api/v1/chart/2`, `/api/v1/chart/3`, `/api/v1/chart/5` (dist_bar của Phase 6, tham chiếu
+  cho cơ chế sắp xếp vừa áp dụng) vẫn trả `viz_type`/`params` **không đổi** — xác nhận không vô
+  tình sửa nhầm chart Phase 6 khi chỉnh sửa code dùng chung (hàm `ensure_chart`).
+
+### Nếu vẫn còn lỗi sau khi tải lại trang
+
+Việc sửa ở trên dựa trên **suy luận có bằng chứng** (so sánh với chart đã hoạt động), **không
+phải xác nhận trực tiếp bằng trình duyệt** — môi trường này không có trình duyệt. Nếu người dùng
+tải lại trang (hard refresh) và **vẫn còn** chart không hiện:
+1. Mở Developer Tools (F12) → tab Console/Network khi tải dashboard, tìm lỗi JS hoặc request
+   `/api/v1/chart/data` trả về mã lỗi — đây là thông tin môi trường này không thu thập được.
+2. Gửi lại thông báo lỗi cụ thể (tên chart, lỗi hiện trong Console nếu có) để điều tra tiếp —
+   khi đó cần nguyên nhân khác ngoài `order_by_cols` (đã loại trừ qua so sánh ở mục 12).
+3. Phương án dự phòng chắc chắn hoạt động: mọi dữ liệu luật kết hợp vẫn truy vấn được trực tiếp
+   qua `psql`/`SELECT * FROM market_basket_rules` (xem mục 8) hoặc qua file CSV
+   `data/processed/apriori_association_rules.csv` — không phụ thuộc vào Superset.
