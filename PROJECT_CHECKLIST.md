@@ -605,11 +605,46 @@ Ký hiệu trạng thái: `[ ]` Chưa bắt đầu · `[~]` Đang làm · `[x]` 
 
 ### Phase 8 — Mở rộng (chỉ làm nếu còn thời gian, không ảnh hưởng Phase 0–7)
 
-- [ ] **8.1 Market Basket Analysis (Apriori)**
-  - Phụ trách: TV3 | Công cụ: mlxtend hoặc tự cài thêm thư viện tương đương
-  - Đầu ra: Luật kết hợp sản phẩm thường mua cùng nhau
-  - Tiêu chí nghiệm thu: Có ít nhất vài luật với support/confidence hợp lý, không làm chậm/crash pipeline chính
-  - Phụ thuộc: Phase 5 hoàn tất
+- [x] **8.1 Market Basket Analysis (Apriori)** (DONE đầy đủ — thuật toán + CSV + tích hợp DW, kiểm thử thật 2026-10-28)
+  - Phụ trách: TV3 | Công cụ: **tự cài đặt Apriori bằng Python/Pandas thuần** (không có
+    `mlxtend`/`efficient-apriori`/`apyori` sẵn trong môi trường — đã kiểm tra trước khi quyết
+    định không thêm dependency, tự cài đặt tránh one-hot encoding toàn bộ ma trận hóa đơn×sản
+    phẩm, xem `docs/08_apriori_mba.md` mục 3).
+  - Đầu ra: [`scripts/mining/apriori_mba.py`](scripts/mining/apriori_mba.py) (thuật toán +
+    CLI độc lập, hỗ trợ `--source dw|csv`), [`scripts/mining/test_apriori_mba.py`](scripts/mining/test_apriori_mba.py)
+    (19 unit test: `unittest` chuẩn, không thêm dependency), tài liệu đầy đủ
+    [`docs/08_apriori_mba.md`](docs/08_apriori_mba.md). Tích hợp DW (đã chạy thật — xem dưới):
+    [`sql/004_market_basket_rules.sql`](sql/004_market_basket_rules.sql),
+    [`scripts/mining/load_apriori_dw.py`](scripts/mining/load_apriori_dw.py).
+  - **Đã chạy thật (2026-10-28), `--source csv` trên `datalake/processed/2026-10-23/fact_sales.csv`
+    (1.003.670 dòng — cùng nội dung đã nạp vào `postgres-dw.fact_sales`):** 39.536 hóa đơn,
+    4.905 sản phẩm → 323 frequent itemset (265 đơn + 58 cặp, `min_support=0.02`), **101 luật**
+    đạt `min_confidence=0.30`, **101/101 luật có `lift > 1`**. Top luật hợp lý về nghiệp vụ
+    (các biến thể màu khác nhau của cùng 1 sản phẩm, ví dụ GREEN/PINK/ROSES REGENCY TEACUP AND
+    SAUCER, lift 21–24). Chạy trong 4,2–4,7s, không cần one-hot encoding, không ảnh hưởng/không
+    được gọi từ DAG Airflow chính. 19/19 unit test PASS (bao gồm trường hợp rỗng/không có
+    frequent itemset, ngưỡng không hợp lệ, dữ liệu đầu vào vi phạm quy tắc làm sạch).
+  - **Cập nhật kiểm thử DW (2026-10-28, lượt 2 — Docker Desktop hoạt động):** khởi động
+    `postgres-dw` sạch, nạp `sql/001_create_star_schema.sql` + `uv run scripts/load/load.py`
+    (xác nhận lại `fact_sales=1.003.670`, `dim_customer=5.853`, ... khớp số liệu đã công bố).
+    Chạy `apriori_mba.py --source dw` lần đầu tiên → **kết quả giống hệt tuyệt đối**
+    `--source csv` (323 itemset, 101 luật, cùng top-15 theo lift). Chạy
+    `sql/004_market_basket_rules.sql` (lần 1: tạo bảng; **lần 2: idempotent, `NOTICE already
+    exists`, không mất dữ liệu**). Chạy `load_apriori_dw.py` UPSERT 101 dòng, **chạy lại lần 2
+    vẫn đúng 101 dòng** (không trùng). Kiểm tra validity trên DW thật: 0 luật tự tham chiếu,
+    0 item rỗng, 0 vi phạm `confidence < support`, 0 support/confidence ngoài (0,1], 0 lift âm,
+    0 cặp trùng khóa tự nhiên. Trường hợp biên `min_support=0.99` → 0 luật, loader phát hiện
+    `df.empty`, dừng sớm **không xóa** 101 dòng đã nạp trước đó. Hồi quy: `rfm_dw.py` (khớp
+    tuyệt đối baseline, 0 lệch), `cluster_dw.py` (947/1.875/1.634/1.397 đúng 4 cụm đã công bố),
+    `load_segments_dw.py` (5.853 dòng) đều chạy lại thành công trên cùng DW — không bị ảnh
+    hưởng bởi bảng `market_basket_rules` mới thêm. Chi tiết đầy đủ: `docs/08_apriori_mba.md`
+    mục 8. Sau kiểm thử, `docker compose stop postgres-dw` (không ảnh hưởng container khác, vì
+    không có container nào khác đang chạy trước đó).
+  - Tiêu chí nghiệm thu: **Đạt đầy đủ** — thuật toán/CSV/DW đều đã chạy thật và xác nhận đúng,
+    bao gồm idempotency (DDL + UPSERT chạy lại không trùng/không lỗi), không ảnh hưởng pipeline
+    khác (ETL/RFM/K-Means hồi quy PASS), không làm chậm pipeline chính (script độc lập, không
+    nằm trong DAG Airflow).
+  - Phụ thuộc: Phase 5 hoàn tất (đáp ứng)
 
 - [ ] **8.2 Decision Tree dự đoán phân khúc/khả năng rời bỏ**
   - Phụ trách: TV3 | Công cụ: Scikit-learn

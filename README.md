@@ -8,8 +8,10 @@
 > phỏng) → Transform → Load → Validate (Airflow DAG `retail_online_ii_etl`, `fact_sales` =
 > **1.003.670 dòng**) → OLAP (13 view SQL) → Data Mining (RFM + K-Means từ DW, bảng
 > `customer_segment` = **5.853 khách hàng**) → Superset Dashboard (6 chart, 2 bộ lọc, kết nối
-> thật tới Data Warehouse). **Phase 7 (kiểm thử tổng/báo cáo/demo) đang hoàn thiện, Phase 8
-> (Apriori/Decision Tree) là mở rộng tùy chọn, chưa làm.** Chi tiết đầy đủ, bằng chứng kiểm
+> thật tới Data Warehouse). **Phase 7 (kiểm thử tổng/báo cáo/demo) đang hoàn thiện. Phase 8.1
+> (Market Basket Analysis / Apriori) đã hoàn thành và kiểm thử thật** (thuật toán tự cài đặt +
+> CSV + tích hợp DW `market_basket_rules`, xem mục E bước 6); **Phase 8.2 (Decision Tree)**
+> vẫn là mở rộng tùy chọn, chưa làm. Chi tiết đầy đủ, bằng chứng kiểm
 > thử, quyết định kỹ thuật: xem [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md),
 > [`PROJECT_CHECKLIST.md`](PROJECT_CHECKLIST.md), [`docs/PROJECT_GAP_ANALYSIS.md`](docs/PROJECT_GAP_ANALYSIS.md)
 > và [`docs/00_bao_cao_do_an.md`](docs/00_bao_cao_do_an.md) (báo cáo tổng hợp + kịch bản demo).
@@ -84,6 +86,51 @@ chiếu) và pipeline chính thức đọc trực tiếp từ Data Warehouse
 (`scripts/mining/rfm_dw.py`, `scripts/mining/cluster_dw.py`,
 `scripts/mining/load_segments_dw.py`) — đã đối chiếu khớp tuyệt đối baseline. Chi tiết:
 [`docs/05_rfm_kmeans_dw.md`](docs/05_rfm_kmeans_dw.md).
+
+**(Mở rộng, Phase 8.1)** `scripts/mining/apriori_mba.py` phân tích luật kết hợp (Market Basket
+Analysis) trên cùng dữ liệu `fact_sales` — độc lập, không nằm trong DAG, không ảnh hưởng luồng
+trên. Chi tiết: [`docs/08_apriori_mba.md`](docs/08_apriori_mba.md).
+
+### Công nghệ & phiên bản chính (đối chiếu trực tiếp `docker-compose.yml`/`pyproject.toml`)
+
+| Thành phần | Phiên bản/image | Vai trò |
+|---|---|---|
+| PostgreSQL | `postgres:16-alpine` (×3: `postgres-source`, `postgres-dw`, `postgres-airflow`) | DB nguồn, Data Warehouse, metadata Airflow |
+| Apache Airflow | `apache/airflow:2.10.5-python3.12`, `LocalExecutor` | Điều phối DAG ETL |
+| Apache Superset | `apache/superset:4.1.1` | Dashboard BI |
+| Python | `>=3.11` (xem `.python-version`), quản lý bằng [uv](https://docs.astral.sh/uv/) | Script host (ingest/transform/load/mining) |
+| Thư viện Python chính | `pandas`, `scikit-learn`, `psycopg2-binary`, `openpyxl`, `matplotlib` (xem `pyproject.toml`) | Xử lý dữ liệu, RFM/K-Means, kết nối Postgres, đọc Excel, vẽ biểu đồ |
+| FastAPI | theo `api/requirements.txt`, build từ `api/Dockerfile` | Mô phỏng nguồn "API" |
+
+### Cấu trúc thư mục chính
+
+```
+KhoDL/
+├── airflow/dags/retail_etl_dag.py   # DAG Airflow duy nhat (Extract->Transform->Load->Validate)
+├── api/                              # FastAPI mo phong nguon "API" (app/main.py, app/data.py)
+├── data/
+│   ├── raw/                          # dataset Kaggle goc (KHONG commit — xem muc C)
+│   └── processed/                    # output RFM/K-Means/Apriori dang CSV (KHONG commit)
+├── datalake/
+│   ├── raw/{api,file,database}/<ngay>/   # snapshot Extract (KHONG commit)
+│   ├── processed/<ngay>/                  # output Transform: dim_*.csv, fact_sales.csv (KHONG commit)
+│   └── metadata/ingest_log.csv            # log ingest append-only (CO commit — bang chung kiem thu)
+├── docs/                              # tai lieu thiet ke + bao cao tung Phase (xem muc H)
+│   └── architecture/                  # so do kien truc he thong (PNG)
+├── scripts/
+│   ├── 01_explore_data.py, 02_clean_data.py   # khao sat/lam sach du lieu (Phase 0)
+│   ├── 03_rfm.py, 04_kmeans.py                 # RFM+K-Means baseline, doc CSV (Phase 5 goc)
+│   ├── ingest/                                  # 3 nguon mo phong + Data Lake (Phase 1)
+│   ├── transform/transform.py                   # Transform — ap dung quy tac lam sach (Phase 2.3)
+│   ├── load/load.py                             # Load vao PostgreSQL DW (Phase 2.4)
+│   ├── mining/                                   # RFM/K-Means tu DW (5.1, 5.5) + Apriori (8.1)
+│   └── superset/                                 # tao database/dataset/chart qua REST API (Phase 6)
+├── sql/                               # DDL: Star Schema, OLAP view, customer_segment, market_basket_rules
+├── superset/superset_config.py        # cau hinh Superset (SECRET_KEY doc tu env)
+├── docker-compose.yml                 # toan bo ha tang (7 service)
+├── .env.example                       # mau bien moi truong (an toan, khong chua secret that)
+└── pyproject.toml / uv.lock           # dependency Python (quan ly boi uv)
+```
 
 ---
 
@@ -256,6 +303,39 @@ Sau khi chạy xong, mở `http://localhost:8088` (đăng nhập bằng `SUPERSE
 `SUPERSET_ADMIN_PASSWORD` trong `.env`) → **Dashboards** → "Online Retail II - Tong quan kinh
 doanh" để xem dashboard.
 
+**6. (Mở rộng, Phase 8.1) Market Basket Analysis — luật kết hợp Apriori**
+
+Độc lập với pipeline chính (không nằm trong DAG Airflow, không ảnh hưởng ETL/RFM/K-Means/
+Superset — đã kiểm thử hồi quy). Thuật toán Apriori **tự cài đặt** (không one-hot encoding,
+không thêm dependency ngoài — xem `docs/08_apriori_mba.md` mục 3).
+
+Chạy **không cần Docker** (đọc snapshot CSV đã có trên máy):
+```bash
+uv run scripts/mining/apriori_mba.py --source csv       # doc datalake/processed/<ngay moi nhat>/
+```
+→ Xuất `data/processed/apriori_frequent_itemsets.csv` + `apriori_association_rules.csv`
+(**đã kiểm thử thật**: 39.536 hóa đơn, 323 frequent itemset, **101 luật**, 101/101 có `lift>1`).
+
+Chạy **kiến trúc chính thức qua DW** (cần `postgres-dw` đang `healthy` + đã Load dữ liệu ở bước
+3–4) + nạp kết quả vào bảng riêng `market_basket_rules` — **đã kiểm thử thật, idempotent**:
+```bash
+docker exec -i khodl-postgres-dw psql -U <PG_DW_USER> -d <PG_DW_DB> -v ON_ERROR_STOP=1 < sql/004_market_basket_rules.sql
+uv run scripts/mining/apriori_mba.py --source dw         # ket qua giong het --source csv
+uv run scripts/mining/load_apriori_dw.py                 # UPSERT vao market_basket_rules
+docker exec khodl-postgres-dw psql -U <PG_DW_USER> -d <PG_DW_DB> -c "SELECT count(*) FROM market_basket_rules;"  -- = 101
+```
+
+Chạy unit test (19 test, **không cần Docker, không cần dữ liệu thật**):
+```bash
+uv run scripts/mining/test_apriori_mba.py -v
+```
+Kết quả mong đợi: `Ran 19 tests ... OK`. Nếu có `FAIL`/`ERROR`, kiểm tra lại
+`scripts/mining/apriori_mba.py` chưa bị sửa sai logic.
+
+Chi tiết cách chọn ngưỡng `min_support`/`min_confidence`, toàn bộ số liệu kiểm thử (gồm cả lượt
+kiểm thử DW thật với Docker), thiết kế bảng `market_basket_rules`, và giới hạn đã biết: xem
+[`docs/08_apriori_mba.md`](docs/08_apriori_mba.md).
+
 ### Các lần chạy sau (đã có `.env`, dataset, Star Schema)
 
 Chỉ cần `docker compose up -d` (không cần `--build` lại trừ khi sửa code `api/`) rồi trigger
@@ -297,11 +377,34 @@ docker exec khodl-postgres-dw psql -U <PG_DW_USER> -d <PG_DW_DB> -c "SELECT coun
 docker exec khodl-postgres-dw psql -U <PG_DW_USER> -d <PG_DW_DB> -c "SELECT segment_name, count(*) FROM customer_segment GROUP BY segment_name;"   -- tong = 5853
 ```
 
+Kiểm tra bảng `market_basket_rules` (Phase 8.1, nếu đã chạy bước E.6):
+```bash
+docker exec khodl-postgres-dw psql -U <PG_DW_USER> -d <PG_DW_DB> -c "SELECT count(*) FROM market_basket_rules;"   -- = 101 (voi nguong mac dinh)
+docker exec khodl-postgres-dw psql -U <PG_DW_USER> -d <PG_DW_DB> -c "SELECT antecedent_items, consequent_items, support, confidence, lift FROM market_basket_rules ORDER BY lift DESC LIMIT 5;"
+```
+
 Kiểm tra bảng `source_customers` trong Postgres nguồn:
 ```bash
 docker exec khodl-postgres-source psql -U <PG_SOURCE_USER_trong_.env> -d <PG_SOURCE_DB_trong_.env> -c "SELECT count(*) FROM source_customers;"
 ```
 (Mặc định: user `source_user`, db `retail_source` — kết quả mong đợi: **5.942** dòng.)
+
+### Chạy test tự động và xác nhận thành công
+
+Dự án hiện có 1 bộ unit test tự động (`unittest` chuẩn thư viện Python, không cần dependency
+thêm, không cần Docker/dữ liệu thật) cho module Apriori:
+```bash
+uv run scripts/mining/test_apriori_mba.py -v
+```
+**Kết quả thành công:** dòng cuối in `Ran 19 tests in ...s` và `OK` (không có `FAIL`/`ERROR`).
+
+Các phần còn lại của dự án **chưa có bộ unit test riêng** — việc "kiểm thử thành công" dựa trên
+đối chiếu số liệu thực tế qua `psql`/`curl` như liệt kê ở mục "Kiểm tra kết quả" phía trên
+(ví dụ `fact_sales=1.003.670`, `customer_segment` tổng `5.853`, `market_basket_rules=101`) và
+task Airflow `validate` (kiểm tra orphan FK, công thức revenue — tự FAIL nếu sai, xem
+`airflow/dags/retail_etl_dag.py::validate_dw()`). Xem thêm
+[`docs/08_apriori_mba.md`](docs/08_apriori_mba.md) mục 8 cho log kiểm thử đầy đủ của Phase 8.1
+(bao gồm idempotency DDL/UPSERT và kiểm tra tính hợp lệ dữ liệu trên DW thật).
 
 ### Dừng service an toàn (không mất dữ liệu)
 ```bash
@@ -332,6 +435,9 @@ liệu đã nạp trong `postgres-source`/`postgres-dw`/Airflow/Superset, phải
 | `test_connection`/tạo database Superset lỗi `Could not load database driver: PostgresEngineSpec` | Image `apache/superset` gốc chưa có driver `psycopg2` | Đảm bảo `docker-compose.yml` đã có dòng `pip install psycopg2-binary` trong `command` của service `superset` (đã có sẵn trong repo), rồi `docker compose up -d superset` để tạo lại container với lệnh mới |
 | `scripts/superset/provision_superset.py` lỗi `KeyError: 'SUPERSET_ADMIN_USER'`/kết nối `Connection refused` tới `localhost:8088` | Thiếu `.env` hoặc Superset chưa `healthy` | Kiểm tra `.env` có đủ biến `SUPERSET_*`; chạy `docker compose ps` đợi `khodl-superset` thành `healthy` trước khi chạy script |
 | Chạy `provision_superset.py` báo lỗi khi tạo dataset/chart (ví dụ thiếu view) | Chưa chạy `sql/002_olap_views.sql` hoặc `sql/003_customer_segment.sql` trước | Chạy đúng thứ tự ở mục E bước 5: tạo view/bảng trước, rồi mới chạy script mining và Superset |
+| `scripts/mining/apriori_mba.py --source dw` lỗi `KeyError: 'PG_DW_PORT'`/`connection refused` | Chạy `--source dw` nhưng Docker/`postgres-dw` chưa chạy hoặc chưa Load dữ liệu | Dùng `--source csv` nếu không cần Docker (đọc `datalake/processed/<ngày>/`), hoặc chạy đủ bước E.1/E.3/E.4 trước khi dùng `--source dw` |
+| `scripts/mining/apriori_mba.py --source csv` lỗi `Khong tim thay thu muc nao co fact_sales.csv` | Chưa chạy Transform lần nào (`datalake/processed/` rỗng) | Chạy `uv run scripts/transform/transform.py` trước (xem mục "Chạy pipeline trực tiếp trên host"), hoặc dùng `--input <thư_mục>` trỏ tới `datalake/processed/<ngày>/` có sẵn |
+| `load_apriori_dw.py` báo `Chua co .../apriori_association_rules.csv` | Chưa chạy `apriori_mba.py` lần nào | Chạy `uv run scripts/mining/apriori_mba.py --source csv` (hoặc `--source dw`) trước |
 
 ---
 
@@ -362,4 +468,5 @@ liệu đã nạp trong `postgres-source`/`postgres-dw`/Airflow/Superset, phải
 | OLAP (Roll-up/Drill-down, Slice, Dice, Pivot) | [`docs/04_olap.md`](docs/04_olap.md) |
 | RFM + K-Means từ DW, bảng `customer_segment` | [`docs/05_rfm_kmeans_dw.md`](docs/05_rfm_kmeans_dw.md) |
 | Superset — cấu hình, chart, dashboard | [`docs/06_superset_dashboard.md`](docs/06_superset_dashboard.md) |
+| (Mở rộng, Phase 8.1) Market Basket Analysis — Apriori | [`docs/08_apriori_mba.md`](docs/08_apriori_mba.md) |
 | Báo cáo tổng hợp, kịch bản demo, Q&A, checklist nộp bài | [`docs/00_bao_cao_do_an.md`](docs/00_bao_cao_do_an.md) |

@@ -66,7 +66,8 @@ trường Python quản lý bằng `uv` (xem `pyproject.toml`, `uv.lock`, `.venv
 | 5.5 Nạp cluster vào DW | **DONE** (2026-10-24) | Bảng `customer_segment` (`sql/003_customer_segment.sql`) + UPSERT (`scripts/mining/load_segments_dw.py`), 5.853 dòng, 0 orphan FK, chạy lại idempotent — xem mục 3.2b |
 | 6. Dashboard Superset | **DONE qua API (2026-10-24)** | Database+5 dataset+6 chart+1 dashboard tạo qua REST API, đối chiếu khớp DW; **chưa xác nhận bằng mắt trong browser** (môi trường không có browser) — xem `docs/06_superset_dashboard.md` |
 | 7. Kiểm thử tổng/báo cáo/demo | **Phần lớn xong** | `docs/00_bao_cao_do_an.md` đã tổng hợp báo cáo+demo+Q&A+checklist; còn thiếu: xác nhận browser, tên thật thành viên, chữ ký nhóm 0.3 |
-| 8. Mở rộng (Apriori/Decision Tree) | **TODO** (đúng kế hoạch, chưa cần làm) | Chỉ làm nếu còn thời gian sau Phase 0–7 |
+| 8.1 Apriori (Market Basket Analysis) | **DONE đầy đủ, kiểm thử thật 2026-10-28** (thuật toán + CSV + tích hợp DW, cả `--source dw` lẫn `sql/004`/`load_apriori_dw.py`) | Xem mục 3.4 |
+| 8.2 Decision Tree | **TODO** (chưa làm) | Chỉ làm nếu còn thời gian |
 
 ---
 
@@ -251,6 +252,42 @@ trường Python quản lý bằng `uv` (xem `pyproject.toml`, `uv.lock`, `.venv
   không ảnh hưởng, không `docker compose down -v`.
 - Chi tiết đầy đủ: `docs/PROJECT_GAP_ANALYSIS.md` mục 12.
 
+### 3.4 Phase 8.1 — Market Basket Analysis / Apriori (DONE đầy đủ, kiểm thử thật 2026-10-28 — thuật toán+CSV+tích hợp DW)
+- File mới: [`scripts/mining/apriori_mba.py`](scripts/mining/apriori_mba.py) (thuật toán Apriori
+  tự cài đặt bằng Python/Pandas thuần — KHÔNG dùng `mlxtend`/thư viện ngoài, KHÔNG one-hot
+  encoding — + CLI độc lập, hỗ trợ `--source dw|csv`),
+  [`scripts/mining/test_apriori_mba.py`](scripts/mining/test_apriori_mba.py) (19 unit test
+  `unittest` chuẩn), [`sql/004_market_basket_rules.sql`](sql/004_market_basket_rules.sql) +
+  [`scripts/mining/load_apriori_dw.py`](scripts/mining/load_apriori_dw.py) (thiết kế tích hợp
+  DW, theo đúng pattern `customer_segment`). Tài liệu đầy đủ:
+  [`docs/08_apriori_mba.md`](docs/08_apriori_mba.md). Không sửa bất kỳ file nào của Phase 0–7.
+- **Đã chạy thật (2026-10-28):** `uv run scripts/mining/apriori_mba.py --source csv` trên
+  `datalake/processed/2026-10-23/fact_sales.csv` (1.003.670 dòng, cùng nội dung đã nạp DW) →
+  39.536 hóa đơn, 4.905 sản phẩm → 323 frequent itemset (`min_support=0.02`), **101 luật**
+  (`min_confidence=0.30`), **101/101 có `lift > 1`**. Top luật hợp lý nghiệp vụ (biến thể màu
+  cùng 1 sản phẩm, ví dụ GREEN/PINK/ROSES REGENCY TEACUP AND SAUCER, lift 21–24). Chạy 4,2–4,7s.
+  19/19 unit test PASS (kể cả trường hợp rỗng/không có frequent itemset, dữ liệu vi phạm quy
+  tắc làm sạch).
+- **Cập nhật 2026-10-28 (lượt kiểm thử thứ 2, Docker Desktop hoạt động):** đã khởi động
+  `postgres-dw` sạch, nạp Star Schema + `fact_sales` thật (`uv run scripts/load/load.py` —
+  khớp lại đúng 1.003.670 dòng/5.853 khách hàng như đã công bố), rồi chạy thật **cả 2 phần
+  trước đây CHƯA kiểm thử**:
+  - `apriori_mba.py --source dw` → kết quả **giống hệt tuyệt đối** `--source csv` (323 itemset,
+    101 luật, cùng top-15 theo lift) — xác nhận SQL JOIN `fact_sales`/`dim_product` đúng.
+  - `sql/004_market_basket_rules.sql` + `scripts/mining/load_apriori_dw.py`: DDL chạy lần 1 tạo
+    bảng, **chạy lại lần 2 idempotent** (NOTICE skip, không mất dữ liệu); loader UPSERT 101
+    dòng, **chạy lại lần 2 vẫn 101 dòng** (không trùng); kiểm tra validity trên DW thật (0 luật
+    tự tham chiếu, 0 item rỗng, 0 vi phạm `confidence<support`, 0 giá trị ngoài khoảng hợp lệ,
+    0 cặp khóa trùng); trường hợp biên 0 luật (`min_support=0.99`) không làm mất 101 dòng đã có.
+  - Hồi quy: `rfm_dw.py`/`cluster_dw.py`/`load_segments_dw.py` chạy lại trên cùng DW cho đúng kết
+    quả đã công bố trước đây (947/1.875/1.634/1.397 khách hàng/cụm) — bảng `market_basket_rules`
+    mới không ảnh hưởng các thành phần khác.
+  - Container `postgres-dw` dùng để kiểm thử đã `docker compose stop` sau khi xong (không có
+    container nào khác của dự án đang chạy trước đó nên không ảnh hưởng gì).
+  - Chi tiết đầy đủ, bao gồm số liệu cụ thể từng bước: `docs/08_apriori_mba.md` mục 8.
+- Không thêm dependency (`mlxtend`/`efficient-apriori`/`apyori` đã kiểm tra không có sẵn, quyết
+  định tự cài đặt thay vì `uv add` thêm thư viện).
+
 ### 3.3.g Phase 4.1–4.4 — OLAP views đầy đủ (DONE, kiểm thử thật 2026-10-24)
 - File: [`sql/002_olap_views.sql`](sql/002_olap_views.sql) (**13 view**, lượt đầu 9 + lượt
   này bổ sung 4), [`docs/04_olap.md`](docs/04_olap.md) (thiết kế + kết quả kiểm thử đầy đủ,
@@ -286,7 +323,7 @@ trường Python quản lý bằng `uv` (xem `pyproject.toml`, `uv.lock`, `.venv
 | Superset kết nối `postgres-dw` + chart (Phase 6) | 13 view OLAP (`sql/002_olap_views.sql`) đã sẵn sàng làm nguồn — **chưa cấu hình Superset UI** |
 | OLAP Pivot Thời gian × Sản phẩm | Chỉ làm Pivot Quốc gia × Năm (4.905 sản phẩm quá nhiều cột); nếu cần, nên pivot Top N sản phẩm × Năm/Quý — **chưa làm** |
 | Kiểm thử tổng, README, báo cáo, demo (Phase 7) | Phụ thuộc toàn bộ Phase 1–6 |
-| Apriori/Decision Tree (Phase 8) | Theo kế hoạch, chỉ làm sau khi Phase 0–7 xong và còn thời gian — **không phải thiếu sót** |
+| Decision Tree (Phase 8.2) | Theo kế hoạch, chỉ làm sau khi còn thời gian — **không phải thiếu sót** |
 
 ---
 
