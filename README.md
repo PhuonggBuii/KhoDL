@@ -342,29 +342,34 @@ uv run scripts/superset/verify_charts.py        # doi chieu toan bo chart (ca cu
 ```
 → Dashboard **"Apriori - Luat ket hop san pham"**: `http://localhost:8088/superset/dashboard/2/`
 (id có thể khác nếu đã có dashboard khác được tạo trước — script in ra URL chính xác sau khi
-chạy). **5 chart** (đã xác minh thật qua `/api/v1/chart/data`, số liệu khớp `psql`):
+chạy). **5 chart**, antecedent/consequent hiển thị **tên sản phẩm thật kèm mã** (không chỉ
+StockCode), đã xác minh thật qua `/api/v1/chart/data`, số liệu khớp `psql`:
 
 | Chart | Loại | Nội dung |
 |---|---|---|
 | Apriori - KPI tong quan | Bảng (aggregate) | Tổng số luật, số luật `lift>1`, confidence/lift trung bình |
-| Apriori - Top 10 luat theo Lift | Bảng (aggregate, sort `Lift` giảm dần) | 10 luật có `lift` cao nhất |
-| Apriori - Top 10 luat theo Confidence | Bảng (aggregate, sort `Confidence` giảm dần) | 10 luật có `confidence` cao nhất |
-| Apriori - Phan bo Support, Confidence, Lift theo luat | Bảng (aggregate, sort `Lift` tăng dần) | Toàn bộ 101 luật |
-| Apriori - Bang chi tiet luat ket hop | Bảng (aggregate, sort `Lift` giảm dần) | Toàn bộ 101 luật |
+| Apriori - Top 10 luat theo Lift | Bảng (aggregate, sort `Lift` giảm dần) | Tên+mã sản phẩm 2 vế, Support, Confidence (%), Lift |
+| Apriori - Top 10 luat theo Confidence | Bảng (aggregate, sort `Confidence (%)` giảm dần) | Như trên |
+| Apriori - Phan bo Support, Confidence, Lift theo luat | Bảng (aggregate, sort `Lift` tăng dần) | Như trên, toàn bộ 101 luật |
+| Apriori - Bang chi tiet luat ket hop | Bảng (aggregate, sort `Lift` giảm dần) | Như trên, toàn bộ 101 luật |
 
-**Lưu ý quan trọng (xem đầy đủ ở `docs/08_apriori_mba.md` mục 12):** lượt tạo dashboard đầu tiên
-có **lỗi hiển thị thật** (chỉ chart KPI hiện ra, 4 chart còn lại không hiện dù API báo thành
-công) — nguyên nhân xác định được là tham số `order_by_cols` (chế độ `query_mode: raw`) không
-hoạt động đúng trong bản Superset này; đã sửa bằng cách chuyển toàn bộ sang `query_mode:
-aggregate` + `timeseries_limit_metric`/`order_desc` — đúng cơ chế đã hoạt động ổn định ở các
-chart `dist_bar` của dashboard chính. Chart Scatter dự kiến ban đầu cũng đổi thành bảng vì không
-thể xác minh được việc hiển thị của `echarts_timeseries_scatter` trong môi trường không có trình
-duyệt. **Dashboard chưa được xác nhận bằng mắt sau khi sửa** — người dùng cần tải lại trang
-(hard refresh) và tự kiểm tra; nếu vẫn lỗi, xem hướng dẫn chẩn đoán tiếp ở mục 12 của tài liệu.
+Tên sản phẩm lấy từ view mới `v_market_basket_rules_named` (nối `dim_product.description` theo
+StockCode, xem `sql/004_market_basket_rules.sql`) — đã kiểm tra thật: **45/45 StockCode xuất
+hiện trong luật đều tra được tên (0 mã "Unknown product")**, view không làm nhân bản luật
+(101 dòng view = 101 dòng bảng gốc).
+
+**Lưu ý quan trọng (xem đầy đủ ở `docs/08_apriori_mba.md` mục 12–14):** lượt tạo dashboard đầu
+tiên có **lỗi hiển thị thật** (chỉ chart KPI hiện ra) do `order_by_cols` không hoạt động đúng
+trong bản Superset này — đã sửa bằng `query_mode: aggregate` + `timeseries_limit_metric`/
+`order_desc` (cơ chế đã ổn định ở dashboard chính). Lượt thêm tên sản phẩm sau đó **vô tình tạo
+1 chart trùng** do dùng nhầm tên tra cứu cũ — đã phát hiện qua API và xóa ngay (xem mục 14).
+**Dashboard chưa được xác nhận bằng mắt** — người dùng cần tải lại trang (hard refresh) tại
+`http://localhost:8088/superset/dashboard/2/` và tự kiểm tra.
 
 Chi tiết cách chọn ngưỡng `min_support`/`min_confidence`, toàn bộ số liệu kiểm thử (gồm cả lượt
-kiểm thử DW thật với Docker và dashboard Superset), thiết kế bảng `market_basket_rules`, và giới
-hạn đã biết: xem [`docs/08_apriori_mba.md`](docs/08_apriori_mba.md).
+kiểm thử DW thật với Docker, dashboard Superset, và việc nối tên sản phẩm), thiết kế bảng
+`market_basket_rules`/view `v_market_basket_rules_named`, và giới hạn đã biết: xem
+[`docs/08_apriori_mba.md`](docs/08_apriori_mba.md).
 
 ### Các lần chạy sau (đã có `.env`, dataset, Star Schema)
 
@@ -411,6 +416,12 @@ Kiểm tra bảng `market_basket_rules` (Phase 8.1, nếu đã chạy bước E.
 ```bash
 docker exec khodl-postgres-dw psql -U <PG_DW_USER> -d <PG_DW_DB> -c "SELECT count(*) FROM market_basket_rules;"   -- = 101 (voi nguong mac dinh)
 docker exec khodl-postgres-dw psql -U <PG_DW_USER> -d <PG_DW_DB> -c "SELECT antecedent_items, consequent_items, support, confidence, lift FROM market_basket_rules ORDER BY lift DESC LIMIT 5;"
+```
+
+Kiểm tra view `v_market_basket_rules_named` (tên sản phẩm, xem `docs/08_apriori_mba.md` mục 13):
+```bash
+docker exec khodl-postgres-dw psql -U <PG_DW_USER> -d <PG_DW_DB> -c "SELECT count(*) FROM v_market_basket_rules_named;"   -- = 101, phai bang market_basket_rules (khong nhan ban)
+docker exec khodl-postgres-dw psql -U <PG_DW_USER> -d <PG_DW_DB> -c "SELECT antecedent_label, consequent_label, confidence_pct, lift FROM v_market_basket_rules_named ORDER BY lift DESC LIMIT 5;"
 ```
 
 Kiểm tra bảng `source_customers` trong Postgres nguồn:

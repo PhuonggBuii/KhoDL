@@ -41,8 +41,12 @@ DASHBOARD_TITLE = "Online Retail II - Tong quan kinh doanh"
 # Phase 8.1 - dashboard rieng cho ket qua Apriori (market_basket_rules), tach
 # biet voi dashboard tong quan kinh doanh o tren - KHONG dong vao dashboard do.
 APRIORI_DATASET_TABLE = "market_basket_rules"
+# View noi ten san pham that (sql/004_market_basket_rules.sql) - dung cho MOI
+# chart/bang hien thi luat (antecedent/consequent), de KHONG viet lai logic
+# noi ten rieng cho tung chart. Chart KPI (khong hien antecedent/consequent)
+# van dung APRIORI_DATASET_TABLE (bang goc), khong can doi.
+APRIORI_NAMED_VIEW = "v_market_basket_rules_named"
 APRIORI_DASHBOARD_TITLE = "Apriori - Luat ket hop san pham"
-APRIORI_RULE_COLUMNS = ["antecedent_items", "consequent_items", "support", "confidence", "lift"]
 
 
 def metric(column: str, aggregate: str, label: str) -> dict:
@@ -354,36 +358,52 @@ def ensure_dashboard(c: SupersetClient, chart_ids: dict[str, int], ds: dict[str,
     return dash_id
 
 
-def ensure_apriori_dataset(c: SupersetClient, db_id: int) -> int:
-    existing = c.find_one("dataset", "table_name", APRIORI_DATASET_TABLE)
+def _ensure_dataset_by_table(c: SupersetClient, db_id: int, table_name: str) -> int:
+    existing = c.find_one("dataset", "table_name", table_name)
     if existing:
-        print(f"[provision] Dataset '{APRIORI_DATASET_TABLE}' da ton tai (id={existing['id']}).")
+        print(f"[provision] Dataset '{table_name}' da ton tai (id={existing['id']}).")
         return existing["id"]
-    resp = c.post("/api/v1/dataset/", {"database": db_id, "schema": "public", "table_name": APRIORI_DATASET_TABLE})
-    print(f"[provision] Da tao dataset '{APRIORI_DATASET_TABLE}' (id={resp['id']}).")
+    resp = c.post("/api/v1/dataset/", {"database": db_id, "schema": "public", "table_name": table_name})
+    print(f"[provision] Da tao dataset '{table_name}' (id={resp['id']}).")
     return resp["id"]
 
 
-def _rule_metrics() -> list[dict]:
-    return [
-        metric("support", "MAX", "Support"),
-        metric("confidence", "MAX", "Confidence"),
-        metric("lift", "MAX", "Lift"),
-    ]
+def ensure_apriori_dataset(c: SupersetClient, db_id: int) -> int:
+    return _ensure_dataset_by_table(c, db_id, APRIORI_DATASET_TABLE)
 
 
-def _top_n_table_params(datasource: str, order_metric_label: str, order_desc: bool, row_limit: int) -> dict:
-    """Bang top-N theo 1 metric, dung dung co che da xac minh HOAT DONG trong
+def ensure_apriori_named_dataset(c: SupersetClient, db_id: int) -> int:
+    """Dataset tren view v_market_basket_rules_named (sql/004) - co san ten
+    san pham that (antecedent_label/consequent_label), dung CHUNG cho moi
+    chart hien thi luat (top-N, bang chi tiet) thay vi bang market_basket_rules
+    goc (chi co StockCode)."""
+    return _ensure_dataset_by_table(c, db_id, APRIORI_NAMED_VIEW)
+
+
+def _named_rule_metrics(use_confidence_pct: bool) -> list[dict]:
+    confidence_metric = (
+        metric("confidence_pct", "MAX", "Confidence (%)")
+        if use_confidence_pct
+        else metric("confidence", "MAX", "Confidence")
+    )
+    return [metric("support", "MAX", "Support"), confidence_metric, metric("lift", "MAX", "Lift")]
+
+
+def _named_top_n_table_params(
+    datasource: str, metrics: list[dict], order_metric_label: str, order_desc: bool, row_limit: int
+) -> dict:
+    """Bang top-N tren view co ten san pham (antecedent_label/consequent_label
+    thay cho StockCode tho) - dung dung co che da xac minh HOAT DONG trong
     dashboard nay (groupby + timeseries_limit_metric + order_desc - giong het
     cac chart dist_bar Phase 6 da on dinh), KHONG dung "order_by_cols" (xem
-    ghi chu sua loi ben duoi build_apriori_charts)."""
-    order_metric = next(m for m in _rule_metrics() if m["label"] == order_metric_label)
+    ghi chu sua loi trong docstring build_apriori_charts)."""
+    order_metric = next(m for m in metrics if m["label"] == order_metric_label)
     return {
         "datasource": datasource,
         "viz_type": "table",
         "query_mode": "aggregate",
-        "groupby": ["antecedent_items", "consequent_items"],
-        "metrics": _rule_metrics(),
+        "groupby": ["antecedent_label", "consequent_label"],
+        "metrics": metrics,
         "timeseries_limit_metric": order_metric,
         "order_desc": order_desc,
         "adhoc_filters": [],
@@ -391,10 +411,13 @@ def _top_n_table_params(datasource: str, order_metric_label: str, order_desc: bo
     }
 
 
-def build_apriori_charts(c: SupersetClient, ds_id: int) -> dict[str, int]:
+def build_apriori_charts(c: SupersetClient, ds_id: int, named_ds_id: int) -> dict[str, int]:
     """5 chart cho Phase 8.1 (KPI, top-10 theo Lift, top-10 theo Confidence,
-    phan bo theo Support, bang chi tiet toan bo luat) tren dataset
-    market_basket_rules.
+    phan bo theo Lift, bang chi tiet toan bo luat). `ds_id` = dataset tren
+    bang goc market_basket_rules (chi dung cho KPI - khong can ten san pham).
+    `named_ds_id` = dataset tren view v_market_basket_rules_named (dung cho 4
+    chart con lai - hien thi TEN SAN PHAM THAT thay vi StockCode tho, xem
+    sql/004_market_basket_rules.sql va docs/08_apriori_mba.md muc 13).
 
     SUA LOI (2026-10-28, sau khi nguoi dung bao chi thay chart KPI hien thi,
     4 chart con lai KHONG hien ra trong dashboard): da kiem tra ky bang
@@ -402,23 +425,22 @@ def build_apriori_charts(c: SupersetClient, ds_id: int) -> dict[str, int]:
     (xem docs/08_apriori_mba.md muc 12 de biet chi tiet qua trinh dieu tra).
     Nguyen nhan xac dinh duoc qua so sanh truc tiep voi 1 chart "table" cu DA
     HOAT DONG on dinh (chart "KPI tong quan kho du lieu", Phase 6): chart do
-    dung "query_mode": "raw" + "order_by_cols": [] (RONG). 3 chart loi
-    (apriori_top_lift/top_confidence/detail) la "table" raw voi
-    "order_by_cols" KHONG RONG - day la diem khac biet duy nhat so voi chart
-    da hoat dong. Chart scatter (echarts_timeseries_scatter) cung khong hien
-    - vi khong the xac minh rendering qua API (chi xac minh duoc tang du
-    lieu, khong xac minh duoc tang frontend), thay bang dang "table"
-    (aggregate) cung co che da xac nhan on dinh, thay vi tiep tuc dung 1
-    viz_type chua the kiem chung duoc trong moi truong nay.
+    dung "query_mode": "raw" + "order_by_cols": [] (RONG). 3 chart loi la
+    "table" raw voi "order_by_cols" KHONG RONG - day la diem khac biet duy
+    nhat so voi chart da hoat dong. Da sua: chuyen sang "query_mode":
+    "aggregate" + "timeseries_limit_metric" + "order_desc" - CHINH LA co che
+    sap xep da dung thanh cong trong cac chart dist_bar on dinh cua Phase 6.
 
-    Sua: 3 bang top-N chuyen sang "query_mode": "aggregate" +
-    "timeseries_limit_metric" + "order_desc" - CHINH LA co che sap xep da
-    dung thanh cong trong cac chart dist_bar on dinh cua Phase 6
-    (vd "Doanh thu theo quoc gia", "Top 10 san pham theo doanh thu") - khong
-    phai co che moi, tu suy doan.
+    BO SUNG TEN SAN PHAM (cung ngay 2026-10-28, lan sua thu 2): antecedent/
+    consequent truoc day hien StockCode tho (vd "22697"), nguoi dung yeu cau
+    hien ten san pham that. Doi "groupby" tu antecedent_items/consequent_items
+    (StockCode) sang antecedent_label/consequent_label (ten + ma, tu view
+    v_market_basket_rules_named) - KHONG doi co che sap xep/aggregate da sua
+    o tren, chi doi dataset + ten cot groupby.
     """
     charts: dict[str, int] = {}
     datasource = f"{ds_id}__table"
+    named_datasource = f"{named_ds_id}__table"
 
     charts["apriori_kpi"] = ensure_chart(
         c,
@@ -441,40 +463,45 @@ def build_apriori_charts(c: SupersetClient, ds_id: int) -> dict[str, int]:
         },
     )
 
+    pct_metrics = _named_rule_metrics(use_confidence_pct=True)
+    raw_metrics = _named_rule_metrics(use_confidence_pct=False)
+
     charts["apriori_top_lift"] = ensure_chart(
         c,
         "Apriori - Top 10 luat theo Lift",
         "table",
-        ds_id,
-        _top_n_table_params(datasource, "Lift", order_desc=True, row_limit=10),
+        named_ds_id,
+        _named_top_n_table_params(named_datasource, pct_metrics, "Lift", order_desc=True, row_limit=10),
     )
 
     charts["apriori_top_confidence"] = ensure_chart(
         c,
         "Apriori - Top 10 luat theo Confidence",
         "table",
-        ds_id,
-        _top_n_table_params(datasource, "Confidence", order_desc=True, row_limit=10),
+        named_ds_id,
+        _named_top_n_table_params(named_datasource, pct_metrics, "Confidence (%)", order_desc=True, row_limit=10),
     )
 
-    # Thay the chart Scatter (echarts_timeseries_scatter) - xem docstring ham
-    # nay. Dung lai CUNG 1 chart id (lookup_name = ten CU) de KHONG tao chart
-    # trung, chi doi noi dung + doi ten cho dung voi dang bang moi.
+    # Chart nay truoc day la Scatter (echarts_timeseries_scatter), da doi ten
+    # + doi noi dung thanh bang trong lan sua loi hien thi dashboard (xem
+    # docs/08_apriori_mba.md muc 12) - ten hien tai "Apriori - Phan bo..." la
+    # ten CHINH THUC, khong con can lookup_name theo ten cu nua (ten cu
+    # "Apriori - Scatter Support vs Confidence" khong con ton tai - dung lai
+    # se tao nham 1 chart moi, xem docs/08_apriori_mba.md muc 14).
     charts["apriori_support_distribution"] = ensure_chart(
         c,
         "Apriori - Phan bo Support, Confidence, Lift theo luat",
         "table",
-        ds_id,
-        _top_n_table_params(datasource, "Lift", order_desc=False, row_limit=200),
-        lookup_name="Apriori - Scatter Support vs Confidence",
+        named_ds_id,
+        _named_top_n_table_params(named_datasource, raw_metrics, "Lift", order_desc=False, row_limit=200),
     )
 
     charts["apriori_detail"] = ensure_chart(
         c,
         "Apriori - Bang chi tiet luat ket hop",
         "table",
-        ds_id,
-        _top_n_table_params(datasource, "Lift", order_desc=True, row_limit=200),
+        named_ds_id,
+        _named_top_n_table_params(named_datasource, raw_metrics, "Lift", order_desc=True, row_limit=200),
     )
 
     return charts
@@ -580,7 +607,8 @@ def main() -> None:
           f"http://localhost:{os.environ.get('SUPERSET_PORT', '8088')}/superset/dashboard/{dash_id}/")
 
     apriori_ds_id = ensure_apriori_dataset(c, db_id)
-    apriori_chart_ids = build_apriori_charts(c, apriori_ds_id)
+    apriori_named_ds_id = ensure_apriori_named_dataset(c, db_id)
+    apriori_chart_ids = build_apriori_charts(c, apriori_ds_id, apriori_named_ds_id)
     apriori_dash_id = ensure_apriori_dashboard(c, apriori_chart_ids)
     print(f"[provision] XONG. Dashboard Apriori id={apriori_dash_id}: "
           f"http://localhost:{os.environ.get('SUPERSET_PORT', '8088')}/superset/dashboard/{apriori_dash_id}/")

@@ -654,12 +654,28 @@ Ký hiệu trạng thái: `[ ]` Chưa bắt đầu · `[~]` Đang làm · `[x]` 
     `superset`) đã ở trạng thái chạy sẵn từ trước khi bắt đầu lượt kiểm thử này (không phải do
     phiên này khởi động) — **giữ nguyên đang chạy**, không tắt, để tiện mở dashboard kiểm tra
     trực quan ngay sau khi đọc báo cáo này.
+  - **Cập nhật sửa lỗi dashboard + tên sản phẩm (2026-10-28, lượt 4 — theo yêu cầu người dùng
+    sau khi tự mở trình duyệt):** người dùng báo chart Apriori không hiển thị hết (chỉ thấy
+    KPI). Điều tra qua REST API (không có trình duyệt): xác nhận association/position_json đều
+    đúng, nguyên nhân là 3 chart "table" dùng `order_by_cols` không rỗng (chart cũ đã hoạt động
+    dùng `order_by_cols` rỗng) — sửa bằng `query_mode: aggregate` +
+    `timeseries_limit_metric`/`order_desc` (đúng cơ chế chart `dist_bar` Phase 6 đang dùng); đổi
+    luôn chart Scatter (không xác minh được) sang cùng dạng bảng an toàn. Sau đó người dùng yêu
+    cầu hiển thị **tên sản phẩm thật** thay vì StockCode — thêm view
+    `v_market_basket_rules_named` (nối `dim_product.description`, xử lý đúng nhiều StockCode/vế,
+    fallback "Unknown product (StockCode: ...)", đã xác nhận 45/45 mã tra được tên, 101/101
+    dòng không nhân bản) vào `sql/004_market_basket_rules.sql`; 4/5 chart đổi dataset sang view
+    này. **Sự cố phụ phát sinh và đã sửa ngay:** lần chạy đầu vô tình tạo 1 chart trùng (id=12)
+    do dùng `lookup_name` đã lỗi thời — phát hiện qua `GET /api/v1/chart/`, xóa
+    (`DELETE /api/v1/chart/12`), sửa code, chạy lại xác nhận trở về đúng 11 chart/2 dashboard/7
+    dataset, idempotent. Dashboard Phase 6 xác nhận không đổi trong suốt. Chi tiết đầy đủ:
+    `docs/08_apriori_mba.md` mục 12–14.
   - Tiêu chí nghiệm thu: **Đạt đầy đủ** — thuật toán/CSV/DW/dashboard đều đã chạy thật và xác
     nhận đúng, bao gồm idempotency (DDL + UPSERT + provision Superset chạy lại không
     trùng/không lỗi), không ảnh hưởng pipeline khác (ETL/RFM/K-Means/dashboard Phase 6 hồi quy
     PASS), không làm chậm pipeline chính (script độc lập, không nằm trong DAG Airflow). **Chưa
-    xác nhận bằng mắt trong trình duyệt** (môi trường không có browser — giống hạn chế đã có ở
-    dashboard Phase 6).
+    xác nhận bằng mắt trong trình duyệt** sau lượt sửa cuối (môi trường không có browser — người
+    dùng cần tự tải lại trang và kiểm tra).
   - Phụ thuộc: Phase 5 hoàn tất (đáp ứng)
 
 - [ ] **8.2 Decision Tree dự đoán phân khúc/khả năng rời bỏ**

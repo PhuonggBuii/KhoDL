@@ -279,44 +279,44 @@ rộng, tái sử dụng connection `Retail DW` + pattern idempotent có sẵn),
 [`scripts/superset/verify_charts.py`](../scripts/superset/verify_charts.py) (đã mở rộng tương
 ứng).
 
-**Dataset:** đăng ký trực tiếp bảng `market_basket_rules` (không qua view trung gian — bảng đã
-có đủ cột cần thiết).
+**Dataset:** 2 dataset trên cùng connection `Retail DW`:
+- `market_basket_rules` (bảng gốc) — chỉ dùng cho chart KPI (không cần tên sản phẩm).
+- `v_market_basket_rules_named` (view mới, xem mục 13) — dùng cho 4 chart còn lại, có sẵn
+  `antecedent_label`/`consequent_label` (tên sản phẩm + mã) và `confidence_pct`.
 
 > **Lượt tạo đầu tiên (xem mục 12) có lỗi: chỉ chart "KPI tong quan" hiển thị, 4 chart còn lại
-> KHÔNG hiện ra trong trình duyệt dù API báo thành công.** Đã điều tra và sửa — xem mục 12 để
-> biết nguyên nhân, cách chẩn đoán, và phần còn lại cần người dùng tự xác nhận bằng mắt.
+> KHÔNG hiện ra trong trình duyệt dù API báo thành công.** Đã điều tra và sửa. **Lượt sau đó
+> (xem mục 13) thêm tên sản phẩm thật** thay vì chỉ hiện mã StockCode.
 
-**5 chart hiện tại (sau khi sửa, tất cả đã xác minh qua `/api/v1/chart/data` thật):**
+**5 chart hiện tại (sau 2 lần sửa, tất cả đã xác minh qua `/api/v1/chart/data` thật):**
 
-| # | Tên chart | Loại (`viz_type`) | Nội dung | Kết quả xác minh thật |
-|---|---|---|---|---|
-| 1 | Apriori - KPI tong quan | `table` (aggregate) | Tổng số luật, số luật lift>1, confidence TB, lift TB | `101 / 101 / 0,4856 / 9,179` |
-| 2 | Apriori - Top 10 luat theo Lift | `table` (aggregate, sort theo `Lift` giảm dần) | antecedent/consequent + Support/Confidence/Lift | Top 1: `22698→22697`, lift 24,44 |
-| 3 | Apriori - Top 10 luat theo Confidence | `table` (aggregate, sort theo `Confidence` giảm dần) | Như trên | Top 1: `22698→22697`, confidence 0,836 |
-| 4 | Apriori - Phan bo Support, Confidence, Lift theo luat | `table` (aggregate, sort theo `Lift` tăng dần) | Như trên, toàn bộ 101 luật | **101/101 dòng**, lift nhỏ nhất 2,92 ở đầu bảng |
-| 5 | Apriori - Bang chi tiet luat ket hop | `table` (aggregate, sort theo `Lift` giảm dần) | Như trên, toàn bộ 101 luật | **101/101 dòng**, lift lớn nhất 24,44 ở đầu bảng |
+| # | Tên chart | Loại (`viz_type`) | Dataset | Nội dung | Kết quả xác minh thật |
+|---|---|---|---|---|---|
+| 1 | Apriori - KPI tong quan | `table` (aggregate) | `market_basket_rules` | Tổng số luật, số luật lift>1, confidence TB, lift TB | `101 / 101 / 0,4856 / 9,179` |
+| 2 | Apriori - Top 10 luat theo Lift | `table` (aggregate, sort `Lift` giảm dần) | `v_market_basket_rules_named` | Tên+mã sản phẩm 2 vế, Support, **Confidence (%)**, Lift | Top 1: `PINK REGENCY TEACUP AND SAUCER (22698) → GREEN REGENCY TEACUP AND SAUCER (22697)`, confidence 83,64%, lift 24,44 |
+| 3 | Apriori - Top 10 luat theo Confidence | `table` (aggregate, sort `Confidence (%)` giảm dần) | `v_market_basket_rules_named` | Như trên | Top 1 giống chart #2 (cùng luật cao nhất cả 2 chỉ số) |
+| 4 | Apriori - Phan bo Support, Confidence, Lift theo luat | `table` (aggregate, sort `Lift` tăng dần) | `v_market_basket_rules_named` | Tên+mã sản phẩm 2 vế, Support, Confidence, Lift — toàn bộ 101 luật | **101/101 dòng**, lift nhỏ nhất 2,92 ở đầu bảng |
+| 5 | Apriori - Bang chi tiet luat ket hop | `table` (aggregate, sort `Lift` giảm dần) | `v_market_basket_rules_named` | Như trên | **101/101 dòng**, lift lớn nhất 24,44 ở đầu bảng |
 
 **Lưu ý:** chart #4 (trước đây dự kiến là scatter plot X=support/Y=confidence) đã đổi thành
 **bảng** sau khi phát hiện `echarts_timeseries_scatter` không hiển thị được trong môi trường
 này (xem mục 12) — đây là 1 trong 2 lựa chọn đã nêu từ đầu ("nếu Superset hỗ trợ... chọn loại
-biểu đồ thay thế phù hợp"). Dữ liệu support/confidence/lift của toàn bộ 101 luật vẫn xem được
-đầy đủ qua chart này (sắp theo lift tăng dần, bổ sung góc nhìn khác với chart #5 sắp giảm dần).
+biểu đồ thay thế phù hợp").
 
-**Idempotency đã xác nhận thật:** chạy `provision_superset.py` nhiều lần liên tiếp (cả trước và
-sau khi sửa lỗi) → các lần sau toàn bộ in `Da cap nhat ...` (PUT, không POST mới); `GET
+**Idempotency đã xác nhận thật:** chạy `provision_superset.py` nhiều lần liên tiếp (qua cả 3
+lượt sửa) → các lần sau toàn bộ in `Da cap nhat ...` (PUT, không POST mới); `GET
 /api/v1/dashboard`, `/api/v1/chart`, `/api/v1/dataset` luôn đúng **2 dashboard, 11 chart (6 cũ +
-5 mới), 6 dataset (5 cũ + 1 mới)** — không trùng lặp kể cả khi đổi tên/đổi viz_type 1 chart (dùng
-`lookup_name` để PUT đúng chart cũ theo id, không tạo chart mới — xem mục 12). Dashboard "Online
-Retail II - Tong quan kinh doanh" (Phase 6) xác nhận **không đổi** trong suốt quá trình (vẫn
-đúng 6 chart cũ, không bị thêm/mất chart nào).
+5 mới), 7 dataset (5 cũ + 2 mới)** — không trùng lặp. **Ngoại lệ đã xảy ra và đã sửa:** lượt
+thêm tên sản phẩm (mục 13) tạm thời tạo ra 1 chart trùng (id=12) do `lookup_name` dùng tên đã
+lỗi thời — đã phát hiện và xóa ngay, xem mục 14. Dashboard "Online Retail II - Tong quan kinh
+doanh" (Phase 6) xác nhận **không đổi** trong suốt cả 3 lượt sửa (vẫn đúng 6 chart cũ).
 
 **Chưa kiểm thử (cần mở giao diện thủ công):** môi trường phát triển **không có trình duyệt** —
-toàn bộ xác minh ở trên qua REST API (`/api/v1/chart/data`), không phải qua UI thật. Sau khi sửa
-lỗi ở mục 12, **chưa có xác nhận bằng mắt** rằng cả 5 chart đã hiển thị đúng (chỉ có xác nhận
-gián tiếp rằng cơ chế sắp xếp mới dùng ĐÚNG pattern đã hoạt động ổn định ở dashboard Phase 6).
-Người dùng cần **tải lại trang** (Ctrl+F5/hard refresh để tránh cache cũ) tại
-`http://localhost:8088/superset/dashboard/2/` và tự kiểm tra bằng mắt cả 5 chart trước khi dùng
-cho báo cáo/demo chính thức — nếu vẫn còn chart không hiện, xem mục 12 phần "Nếu vẫn còn lỗi".
+toàn bộ xác minh ở trên qua REST API (`/api/v1/chart/data`), không phải qua UI thật. **Chưa có
+xác nhận bằng mắt** rằng cả 5 chart hiển thị đúng, bao gồm việc tên sản phẩm có hiển thị đúng vị
+trí cột trong giao diện hay không. Người dùng cần **tải lại trang** (Ctrl+F5/hard refresh để
+tránh cache cũ) tại `http://localhost:8088/superset/dashboard/2/` và tự kiểm tra bằng mắt trước
+khi dùng cho báo cáo/demo chính thức — nếu vẫn còn vấn đề, xem mục 12 phần "Nếu vẫn còn lỗi".
 
 **Lệnh chạy:**
 ```bash
@@ -417,3 +417,116 @@ tải lại trang (hard refresh) và **vẫn còn** chart không hiện:
 3. Phương án dự phòng chắc chắn hoạt động: mọi dữ liệu luật kết hợp vẫn truy vấn được trực tiếp
    qua `psql`/`SELECT * FROM market_basket_rules` (xem mục 8) hoặc qua file CSV
    `data/processed/apriori_association_rules.csv` — không phụ thuộc vào Superset.
+
+## 13. Hiển thị tên sản phẩm thật thay vì StockCode (2026-10-28, lượt sửa thứ 3)
+
+### Yêu cầu
+`antecedent_items`/`consequent_items` trong `market_basket_rules` chỉ lưu StockCode (vd `22697`)
+— người xem dashboard không biết đó là sản phẩm gì. Cần hiển thị tên sản phẩm thật (từ
+`dim_product.description`) kèm mã, cho mọi bảng/chart luật kết hợp.
+
+### Khảo sát schema thật trước khi sửa (không đoán tên cột)
+- `market_basket_rules.antecedent_items`/`consequent_items`: kiểu `TEXT`, lưu **danh sách
+  StockCode nối bằng `"|"`, đã sắp xếp** (vd `"20724|22356"` nếu luật có 2 sản phẩm/vế — xem
+  `scripts/mining/apriori_mba.py::build_baskets`/`generate_rules`). Tại thời điểm kiểm tra,
+  **toàn bộ 101 luật đều có đúng 1 StockCode/vế** (`antecedent_size=1`, `consequent_size=1`
+  100%, vì `apriori_mba.py` mặc định `--max-len 2`) — nhưng thiết kế xử lý vẫn phải đúng cho
+  trường hợp nhiều StockCode/vế (nếu sau này chạy `--max-len 3+`), không giả định chỉ có 1 mã.
+- `dim_product`: cột mã là `stock_code` (`VARCHAR(20)`, **UNIQUE**), cột tên là `description`
+  (`VARCHAR(255)`, nullable — theo `docs/03_star_schema.md`, ~0,41% dòng gốc không có mô tả).
+  `stock_code` UNIQUE → JOIN 1 StockCode chỉ khớp tối đa 1 dòng `dim_product`, không cần xử lý
+  trường hợp "nhiều dòng cùng mã" (yêu cầu mục 3 của nhiệm vụ) — đã kiểm tra trực tiếp constraint
+  `uq_dim_product_stock_code` trong `sql/001_create_star_schema.sql`, không suy đoán.
+
+### Kiểm tra mức độ tra được tên (chạy thật trên `postgres-dw`, 2026-10-28)
+```sql
+-- Tach het StockCode xuat hien trong ca antecedent_items lan consequent_items,
+-- LEFT JOIN dim_product, dem so ma tra duoc / khong tra duoc.
+```
+Kết quả thật: **45 StockCode duy nhất** xuất hiện trong 101 luật → **45/45 tra được tên (100%),
+0 mã không tra được**. Không có `description` nào `NULL`/rỗng trong số 45 mã này. (Số liệu này
+đặc thù cho lượt chạy Apriori hiện tại — nếu chạy lại Apriori với ngưỡng khác, bộ StockCode xuất
+hiện có thể khác, nhưng cơ chế fallback "Unknown product" vẫn hoạt động đúng cho trường hợp đó.)
+
+### Thiết kế: 1 view dùng chung, không viết lại logic cho từng chart
+Thêm vào [`sql/004_market_basket_rules.sql`](../sql/004_market_basket_rules.sql) (không tạo file
+mới, không sửa bảng `market_basket_rules` — chỉ thêm `CREATE OR REPLACE VIEW`):
+
+```sql
+CREATE OR REPLACE VIEW v_market_basket_rules_named AS ...
+```
+
+- Tách `antecedent_items`/`consequent_items` bằng `unnest(string_to_array(..., '|'))`, LEFT JOIN
+  `dim_product`, rồi `string_agg(..., '; ' ORDER BY code)` **gộp lại đúng 1 dòng/luật** — xử lý
+  đúng trường hợp nhiều sản phẩm/vế (hiển thị **đủ** các sản phẩm, không lấy riêng mã đầu tiên,
+  đúng yêu cầu mục C của nhiệm vụ).
+- Định dạng mỗi sản phẩm: `"<Tên mô tả> (<StockCode>)"`; nếu không tra được tên:
+  `"Unknown product (StockCode: <mã>)"` — đúng định dạng đã yêu cầu, **không bịa tên**.
+- Thêm cột `confidence_pct` (= `confidence * 100`, làm tròn 2 chữ số) phục vụ yêu cầu "Confidence
+  (%)" ở 2 bảng Top-10 — **không sửa cột `confidence` gốc** (0..1), không sửa bất kỳ giá trị
+  support/confidence/lift nào của thuật toán Apriori.
+- **Đã kiểm tra thật: không nhân bản dòng.** `SELECT count(*) FROM v_market_basket_rules_named`
+  = **101**, đúng bằng `SELECT count(*) FROM market_basket_rules` = 101 (xác nhận JOIN với
+  `dim_product` không fan-out nhờ UNIQUE constraint trên `stock_code`, và `string_agg` gộp đúng
+  theo `rule_id`).
+
+### Thay đổi ở Superset (qua `provision_superset.py`, không chỉnh UI thủ công)
+- Đăng ký thêm 1 dataset mới `v_market_basket_rules_named` (dataset `market_basket_rules` gốc
+  **vẫn giữ nguyên**, chỉ còn dùng cho chart KPI không cần tên sản phẩm).
+- 4 chart (Top-10 Lift, Top-10 Confidence, Phân bố, Bảng chi tiết) đổi `groupby` từ
+  `antecedent_items`/`consequent_items` (StockCode thô) sang `antecedent_label`/
+  `consequent_label` (tên+mã) của dataset mới — **giữ nguyên cơ chế sắp xếp
+  `timeseries_limit_metric`/`order_desc`** đã sửa đúng ở mục 12, chỉ đổi dataset/cột nguồn.
+- 2 bảng Top-10 dùng metric `confidence_pct` (hiển thị dạng %), bảng Phân bố/Chi tiết dùng
+  `confidence` gốc (0..1) — đúng theo cách phân biệt nêu trong yêu cầu (mục A/B có "(%)", mục C
+  không).
+
+### Kiểm tra sau sửa (yêu cầu mục 4 của nhiệm vụ)
+- **Số luật trước/sau:** không đổi — `market_basket_rules` = 101 dòng, `v_market_basket_rules_named`
+  = 101 dòng, bảng "Bang chi tiet luat ket hop" (Superset) trả **101/101 dòng** qua
+  `/api/v1/chart/data` (xem mục 11).
+- **JOIN không nhân bản luật:** xác nhận bằng `count(*)` bằng nhau giữa view và bảng gốc (ở
+  trên), **không phải suy diễn** từ UNIQUE constraint — đã đếm thật.
+- **Tên sản phẩm hiển thị đúng StockCode:** đối chiếu trực tiếp — ví dụ luật lift cao nhất
+  `22698 → 22697` hiển thị thành `"PINK REGENCY TEACUP AND SAUCER (22698)" →
+  "GREEN REGENCY TEACUP AND SAUCER (22697)"`, khớp `dim_product` (`SELECT description FROM
+  dim_product WHERE stock_code IN ('22697','22698')`).
+- **Top 10 vẫn sắp xếp đúng:** đã xác nhận qua `/api/v1/chart/data` — Top-10-Lift trả lift giảm
+  dần từ 24,4404; Top-10-Confidence trả Confidence (%) giảm dần từ 83,64.
+- **API + idempotency:** chạy `provision_superset.py` lại sau khi sửa code (xem mục 14) → toàn
+  bộ `Da cap nhat` (không `Da tao`); `GET /api/v1/chart/`, `/api/v1/dataset/` xác nhận đúng 11
+  chart / 7 dataset, không trùng.
+- **Giao diện trình duyệt:** **CHƯA kiểm tra được** (môi trường không có trình duyệt) — cần
+  người dùng tự xác nhận tại `http://localhost:8088/superset/dashboard/2/` (hard refresh trước).
+
+## 14. Sự cố tạo nhầm 1 chart trùng khi đổi dataset — phát hiện và xóa ngay (2026-10-28)
+
+Khi áp dụng mục 13, lần chạy `provision_superset.py` **đầu tiên** vô tình **tạo thêm 1 chart
+trùng tên** (`id=12`, trùng tên với chart `id=10` đã có) thay vì cập nhật chart cũ tại chỗ.
+
+**Nguyên nhân:** code dùng `lookup_name="Apriori - Scatter Support vs Confidence"` (tên chart
+**trước khi sửa lỗi hiển thị ở mục 12** — tại mục 12, chart này đã được đổi tên thành
+`"Apriori - Phan bo Support, Confidence, Lift theo luat"`). Khi chạy lại ở mục 13, `find_one`
+tìm theo tên CŨ không còn tồn tại → không tìm thấy → tạo chart MỚI (`id=12`) thay vì cập nhật
+`id=10`. Cả 2 chart (10 và 12) cùng bị gắn vào dashboard — vi phạm đúng điều cấm "không tạo chart
+trùng lặp".
+
+**Phát hiện:** sau khi chạy, kiểm tra ngay `GET /api/v1/chart/` thấy 12 chart (thay vì 11) với 2
+chart trùng tên; `GET /api/v1/dashboard/2` xác nhận cả 2 đều gắn vào dashboard — không chỉ dựa
+vào log "provision thành công" của script.
+
+**Khắc phục:** xóa `id=12` (`DELETE /api/v1/chart/12`, xác nhận `{"message": "OK"}`), sửa code
+bỏ `lookup_name` đã lỗi thời (chart đã có tên đúng, không cần tìm theo tên cũ nữa), chạy lại
+`provision_superset.py` — lần này `find_one` khớp đúng `id=10` theo tên hiện tại, in
+`Da cap nhat chart 'Apriori - Phan bo...' (id=10)` (không tạo mới).
+
+**Xác nhận đã sửa đúng:** `GET /api/v1/chart/` sau đó → đúng **11 chart**, không còn `id=12`,
+không còn tên trùng; `GET /api/v1/chart/10` → chỉ gắn với **đúng 1 dashboard** (`id=2`); `GET
+/api/v1/dashboard/2` → đúng **5 chart duy nhất** trong `position_json` và trong trường `charts`.
+Chạy `provision_superset.py` thêm 1 lần nữa (lần 3) → toàn bộ `Da cap nhat`, không có `Da tao`
+nào — xác nhận idempotent trở lại.
+
+**Bài học áp dụng vào code:** tham số `lookup_name` của `ensure_chart()` chỉ an toàn khi dùng
+**đúng 1 lần, ngay tại thời điểm đổi tên** — lần chạy sau đó phải bỏ `lookup_name` (để tìm theo
+tên MỚI, hiện tại), không được giữ `lookup_name` trỏ về tên cũ vĩnh viễn. Đã sửa đúng trong
+`scripts/superset/provision_superset.py` (xem comment tại chart `apriori_support_distribution`).

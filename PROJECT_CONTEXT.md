@@ -293,12 +293,26 @@ trường Python quản lý bằng `uv` (xem `pyproject.toml`, `uv.lock`, `.venv
   `query_mode=aggregate` + `echarts_timeseries_scatter`). Chạy thật 2 lần: lần 2 idempotent
   (toàn bộ PUT, không tạo trùng — xác nhận `GET` API vẫn đúng 2 dashboard/11 chart/6 dataset).
   Cả 11 chart (6 cũ + 5 mới) xác minh qua `/api/v1/chart/data` khớp số liệu thật; dashboard
-  Phase 6 xác nhận không đổi. Chart Scatter (`echarts_timeseries_scatter`, X=`support`,
-  Y=AVG(`confidence`)) hoạt động đúng nhờ tính năng "Generic X-Axis" của Superset — đã xác nhận
-  key viz này tồn tại thật trong bundle JS của container (không phải tự đặt); **không mã hóa
-  `lift` bằng bubble-size** vì Superset 4.1.1 không có viz_type nào hỗ trợ 3 chiều liên tục độc
-  lập cùng lúc (đã kiểm tra thực tế). **Chưa xác nhận bằng mắt trong trình duyệt** (môi trường
-  không có browser). Chi tiết đầy đủ: `docs/08_apriori_mba.md` mục 11.
+  Phase 6 xác nhận không đổi. **Cập nhật (cùng ngày, lượt 2): chart Scatter ban đầu
+  (`echarts_timeseries_scatter`) không hiển thị trong trình duyệt** — xem 2 mục dưới.
+- **Cập nhật 2026-10-28 (lượt 3) — sửa lỗi hiển thị dashboard:** người dùng báo chỉ chart KPI
+  hiển thị, 4 chart còn lại không hiện dù API báo thành công. Điều tra qua REST API (không có
+  trình duyệt): position_json/association đều đúng; so sánh với 1 chart "table" cũ đã hoạt động
+  (Phase 6) phát hiện khác biệt duy nhất là `order_by_cols` không rỗng ở 3 chart lỗi. Sửa: 3
+  bảng top-N chuyển sang `query_mode: aggregate` + `timeseries_limit_metric`/`order_desc` (đúng
+  cơ chế đã hoạt động ở chart `dist_bar` Phase 6); chart Scatter (không xác minh được) đổi thành
+  bảng cùng dạng, đổi tên tại chỗ (không tạo chart mới). Re-verify: idempotent, 2 dashboard/11
+  chart/6 dataset, Phase 6 không đổi, cả 11 chart trả dữ liệu đúng thứ tự. Chi tiết:
+  `docs/08_apriori_mba.md` mục 12.
+- **Cập nhật 2026-10-28 (lượt 4) — hiển thị tên sản phẩm thật:** `antecedent_items`/
+  `consequent_items` chỉ có StockCode, không có tên. Thêm view `v_market_basket_rules_named`
+  vào `sql/004_market_basket_rules.sql` (tách StockCode bằng `unnest(string_to_array(...,'|'))`,
+  LEFT JOIN `dim_product`, `string_agg` gộp lại — đã xác nhận 45/45 mã tra được tên, 0 "Unknown
+  product", 101/101 dòng không nhân bản). 4/5 chart Apriori đổi dataset sang view này (groupby
+  `antecedent_label`/`consequent_label` thay StockCode thô). **Sự cố phụ: lần chạy đầu vô tình
+  tạo 1 chart trùng (id=12)** do `lookup_name` trỏ về tên đã lỗi thời (chart đã đổi tên ở lượt
+  3) — phát hiện ngay qua `GET /api/v1/chart/`, xóa (`DELETE /api/v1/chart/12`), sửa code, chạy
+  lại xác nhận đúng 11 chart/7 dataset, idempotent. Chi tiết: `docs/08_apriori_mba.md` mục 13–14.
 - Không thêm dependency (`mlxtend`/`efficient-apriori`/`apyori` đã kiểm tra không có sẵn, quyết
   định tự cài đặt thay vì `uv add` thêm thư viện).
 
