@@ -38,6 +38,12 @@ DATASETS = [
 
 DASHBOARD_TITLE = "Online Retail II - Tong quan kinh doanh"
 
+# Phase 8.1 - dashboard rieng cho ket qua Apriori (market_basket_rules), tach
+# biet voi dashboard tong quan kinh doanh o tren - KHONG dong vao dashboard do.
+APRIORI_DATASET_TABLE = "market_basket_rules"
+APRIORI_DASHBOARD_TITLE = "Apriori - Luat ket hop san pham"
+APRIORI_RULE_COLUMNS = ["antecedent_items", "consequent_items", "support", "confidence", "lift"]
+
 
 def metric(column: str, aggregate: str, label: str) -> dict:
     return {
@@ -46,6 +52,12 @@ def metric(column: str, aggregate: str, label: str) -> dict:
         "aggregate": aggregate,
         "label": label,
     }
+
+
+def sql_metric(sql_expression: str, label: str) -> dict:
+    """Adhoc metric bang bieu thuc SQL tuy y (vd COUNT(CASE WHEN ... THEN 1 END)) -
+    dung cho KPI "so luat co lift > 1" ma khong co san 1 cot/aggregate don le."""
+    return {"expressionType": "SQL", "sqlExpression": sql_expression, "label": label}
 
 
 def ensure_database(c: SupersetClient) -> int:
@@ -337,6 +349,207 @@ def ensure_dashboard(c: SupersetClient, chart_ids: dict[str, int], ds: dict[str,
     return dash_id
 
 
+def ensure_apriori_dataset(c: SupersetClient, db_id: int) -> int:
+    existing = c.find_one("dataset", "table_name", APRIORI_DATASET_TABLE)
+    if existing:
+        print(f"[provision] Dataset '{APRIORI_DATASET_TABLE}' da ton tai (id={existing['id']}).")
+        return existing["id"]
+    resp = c.post("/api/v1/dataset/", {"database": db_id, "schema": "public", "table_name": APRIORI_DATASET_TABLE})
+    print(f"[provision] Da tao dataset '{APRIORI_DATASET_TABLE}' (id={resp['id']}).")
+    return resp["id"]
+
+
+def build_apriori_charts(c: SupersetClient, ds_id: int) -> dict[str, int]:
+    """4 chart cho Phase 8.1 (KPI, top-10 theo Lift, top-10 theo Confidence,
+    scatter Support x Confidence, bang chi tiet toan bo luat) tren dataset
+    market_basket_rules. Da xac minh thuc te tung dang query qua
+    /api/v1/chart/data truoc khi luu params (xem docs/08_apriori_mba.md)."""
+    charts: dict[str, int] = {}
+    datasource = f"{ds_id}__table"
+
+    charts["apriori_kpi"] = ensure_chart(
+        c,
+        "Apriori - KPI tong quan",
+        "table",
+        ds_id,
+        {
+            "datasource": datasource,
+            "viz_type": "table",
+            "query_mode": "aggregate",
+            "metrics": [
+                metric("rule_id", "COUNT", "Tong so luat"),
+                sql_metric("COUNT(CASE WHEN lift > 1 THEN 1 END)", "So luat co lift > 1"),
+                metric("confidence", "AVG", "Confidence trung binh"),
+                metric("lift", "AVG", "Lift trung binh"),
+            ],
+            "groupby": [],
+            "adhoc_filters": [],
+            "row_limit": 1,
+        },
+    )
+
+    charts["apriori_top_lift"] = ensure_chart(
+        c,
+        "Apriori - Top 10 luat theo Lift",
+        "table",
+        ds_id,
+        {
+            "datasource": datasource,
+            "viz_type": "table",
+            "query_mode": "raw",
+            "all_columns": APRIORI_RULE_COLUMNS,
+            "order_by_cols": [json.dumps(["lift", False])],
+            "adhoc_filters": [],
+            "row_limit": 10,
+        },
+    )
+
+    charts["apriori_top_confidence"] = ensure_chart(
+        c,
+        "Apriori - Top 10 luat theo Confidence",
+        "table",
+        ds_id,
+        {
+            "datasource": datasource,
+            "viz_type": "table",
+            "query_mode": "raw",
+            "all_columns": APRIORI_RULE_COLUMNS,
+            "order_by_cols": [json.dumps(["confidence", False])],
+            "adhoc_filters": [],
+            "row_limit": 10,
+        },
+    )
+
+    # Scatter Support (truc X, "Generic X-Axis" - khong can cot thoi gian) x
+    # Confidence trung binh (truc Y). KHONG the hien lift bang bubble size/mau
+    # vi echarts_timeseries_scatter (ban Superset 4.1.1 dang dung) khong ho tro
+    # 1 chieu lien tuc thu 3 cho scatter (chi co X + (các) metric Y dang
+    # "duong thoi gian" ve thanh diem roi rac) - da thu nghiem bubble_chart
+    # (legacy NVD3) va cac bien the khac, khong co dang nao ho tro ca 3 chieu
+    # lien tuc cung luc trong ban nay; lift van xem duoc qua 2 bang Top-10 va
+    # KPI o tren. Ghi ro trong docs/08_apriori_mba.md.
+    charts["apriori_scatter"] = ensure_chart(
+        c,
+        "Apriori - Scatter Support vs Confidence",
+        "echarts_timeseries_scatter",
+        ds_id,
+        {
+            "datasource": datasource,
+            "viz_type": "echarts_timeseries_scatter",
+            "x_axis": "support",
+            "x_axis_sort_asc": True,
+            "metrics": [metric("confidence", "AVG", "Confidence trung binh")],
+            "groupby": [],
+            "adhoc_filters": [],
+            "row_limit": 150,
+            "y_axis_format": "SMART_NUMBER",
+            "color_scheme": "supersetColors",
+        },
+    )
+
+    charts["apriori_detail"] = ensure_chart(
+        c,
+        "Apriori - Bang chi tiet luat ket hop",
+        "table",
+        ds_id,
+        {
+            "datasource": datasource,
+            "viz_type": "table",
+            "query_mode": "raw",
+            "all_columns": APRIORI_RULE_COLUMNS,
+            "order_by_cols": [json.dumps(["lift", False])],
+            "adhoc_filters": [],
+            "row_limit": 200,
+        },
+    )
+
+    return charts
+
+
+def build_apriori_position_json(chart_ids: dict[str, int]) -> dict:
+    def chart_component(key: str, slice_name: str, width: int, height: int = 50) -> dict:
+        return {
+            "type": "CHART",
+            "id": f"CHART-{key}",
+            "children": [],
+            "parents": [],
+            "meta": {"chartId": chart_ids[key], "width": width, "height": height, "sliceName": slice_name},
+        }
+
+    row1 = {
+        "type": "ROW", "id": "A-ROW-1", "parents": ["A-GRID_ID"],
+        "children": ["CHART-apriori_kpi"],
+        "meta": {"background": "BACKGROUND_TRANSPARENT"},
+    }
+    row2 = {
+        "type": "ROW", "id": "A-ROW-2", "parents": ["A-GRID_ID"],
+        "children": ["CHART-apriori_top_lift", "CHART-apriori_top_confidence"],
+        "meta": {"background": "BACKGROUND_TRANSPARENT"},
+    }
+    row3 = {
+        "type": "ROW", "id": "A-ROW-3", "parents": ["A-GRID_ID"],
+        "children": ["CHART-apriori_scatter"],
+        "meta": {"background": "BACKGROUND_TRANSPARENT"},
+    }
+    row4 = {
+        "type": "ROW", "id": "A-ROW-4", "parents": ["A-GRID_ID"],
+        "children": ["CHART-apriori_detail"],
+        "meta": {"background": "BACKGROUND_TRANSPARENT"},
+    }
+
+    return {
+        "DASHBOARD_VERSION_KEY": "v2",
+        "ROOT_ID": {"type": "ROOT", "id": "ROOT_ID", "children": ["A-GRID_ID"]},
+        "A-GRID_ID": {
+            "type": "GRID", "id": "A-GRID_ID", "parents": ["ROOT_ID"],
+            "children": ["A-ROW-1", "A-ROW-2", "A-ROW-3", "A-ROW-4"],
+        },
+        "A-ROW-1": row1,
+        "A-ROW-2": row2,
+        "A-ROW-3": row3,
+        "A-ROW-4": row4,
+        "CHART-apriori_kpi": chart_component("apriori_kpi", "Apriori - KPI tong quan", 12, 25),
+        "CHART-apriori_top_lift": chart_component("apriori_top_lift", "Apriori - Top 10 luat theo Lift", 6),
+        "CHART-apriori_top_confidence": chart_component(
+            "apriori_top_confidence", "Apriori - Top 10 luat theo Confidence", 6
+        ),
+        "CHART-apriori_scatter": chart_component("apriori_scatter", "Apriori - Scatter Support vs Confidence", 12),
+        "CHART-apriori_detail": chart_component("apriori_detail", "Apriori - Bang chi tiet luat ket hop", 12, 60),
+    }
+
+
+def ensure_apriori_dashboard(c: SupersetClient, chart_ids: dict[str, int]) -> int:
+    existing = c.find_one("dashboard", "dashboard_title", APRIORI_DASHBOARD_TITLE)
+    position_json = build_apriori_position_json(chart_ids)
+    json_metadata = json.dumps(
+        {"native_filter_configuration": [], "chart_configuration": {}, "global_chart_configuration": {}}
+    )
+
+    body = {
+        "dashboard_title": APRIORI_DASHBOARD_TITLE,
+        "position_json": json.dumps(position_json),
+        "json_metadata": json_metadata,
+        "published": True,
+    }
+
+    if existing:
+        dash_id = existing["id"]
+        c.put(f"/api/v1/dashboard/{dash_id}", body)
+        print(f"[provision] Da cap nhat dashboard '{APRIORI_DASHBOARD_TITLE}' (id={dash_id}).")
+    else:
+        resp = c.post("/api/v1/dashboard/", body)
+        dash_id = resp["id"]
+        print(f"[provision] Da tao dashboard '{APRIORI_DASHBOARD_TITLE}' (id={dash_id}).")
+
+    for chart_id in chart_ids.values():
+        chart = c.get(f"/api/v1/chart/{chart_id}")
+        existing_dashboards = [d["id"] for d in chart["result"].get("dashboards", [])]
+        if dash_id not in existing_dashboards:
+            c.put(f"/api/v1/chart/{chart_id}", {"dashboards": existing_dashboards + [dash_id]})
+
+    return dash_id
+
+
 def main() -> None:
     c = SupersetClient()
     c.login()
@@ -346,6 +559,12 @@ def main() -> None:
     dash_id = ensure_dashboard(c, chart_ids, ds)
     print(f"\n[provision] XONG. Dashboard id={dash_id}: "
           f"http://localhost:{os.environ.get('SUPERSET_PORT', '8088')}/superset/dashboard/{dash_id}/")
+
+    apriori_ds_id = ensure_apriori_dataset(c, db_id)
+    apriori_chart_ids = build_apriori_charts(c, apriori_ds_id)
+    apriori_dash_id = ensure_apriori_dashboard(c, apriori_chart_ids)
+    print(f"[provision] XONG. Dashboard Apriori id={apriori_dash_id}: "
+          f"http://localhost:{os.environ.get('SUPERSET_PORT', '8088')}/superset/dashboard/{apriori_dash_id}/")
 
 
 if __name__ == "__main__":

@@ -638,12 +638,28 @@ Ký hiệu trạng thái: `[ ]` Chưa bắt đầu · `[~]` Đang làm · `[x]` 
     tuyệt đối baseline, 0 lệch), `cluster_dw.py` (947/1.875/1.634/1.397 đúng 4 cụm đã công bố),
     `load_segments_dw.py` (5.853 dòng) đều chạy lại thành công trên cùng DW — không bị ảnh
     hưởng bởi bảng `market_basket_rules` mới thêm. Chi tiết đầy đủ: `docs/08_apriori_mba.md`
-    mục 8. Sau kiểm thử, `docker compose stop postgres-dw` (không ảnh hưởng container khác, vì
-    không có container nào khác đang chạy trước đó).
-  - Tiêu chí nghiệm thu: **Đạt đầy đủ** — thuật toán/CSV/DW đều đã chạy thật và xác nhận đúng,
-    bao gồm idempotency (DDL + UPSERT chạy lại không trùng/không lỗi), không ảnh hưởng pipeline
-    khác (ETL/RFM/K-Means hồi quy PASS), không làm chậm pipeline chính (script độc lập, không
-    nằm trong DAG Airflow).
+    mục 8.
+  - **Cập nhật dashboard Superset (2026-10-28, lượt 3):** mở rộng
+    [`scripts/superset/provision_superset.py`](scripts/superset/provision_superset.py) (tái sử
+    dụng connection `Retail DW` có sẵn, thêm dataset `market_basket_rules` + 5 chart + 1
+    dashboard **riêng** "Apriori - Luat ket hop san pham") và
+    [`scripts/superset/verify_charts.py`](scripts/superset/verify_charts.py) (thêm hỗ trợ
+    `query_mode=aggregate` và `echarts_timeseries_scatter`). Chạy thật 2 lần liên tiếp:
+    **idempotent xác nhận** — lần 2 toàn bộ `Da cap nhat` (không tạo trùng), `GET` API xác nhận
+    đúng 2 dashboard/11 chart (6 cũ + 5 mới)/6 dataset (5 cũ + 1 mới). Dashboard Phase 6 cũ
+    **không đổi** (vẫn đúng 6 chart cũ). Cả 11 chart (cũ lẫn mới) xác minh qua
+    `/api/v1/chart/data` khớp số liệu thật. Chi tiết đầy đủ (kể cả giới hạn của chart Scatter —
+    Superset 4.1.1 không hỗ trợ bubble-size 3 chiều): `docs/08_apriori_mba.md` mục 11. Toàn bộ
+    7 container (`postgres-source/dw/airflow`, `airflow-webserver/scheduler`, `fastapi`,
+    `superset`) đã ở trạng thái chạy sẵn từ trước khi bắt đầu lượt kiểm thử này (không phải do
+    phiên này khởi động) — **giữ nguyên đang chạy**, không tắt, để tiện mở dashboard kiểm tra
+    trực quan ngay sau khi đọc báo cáo này.
+  - Tiêu chí nghiệm thu: **Đạt đầy đủ** — thuật toán/CSV/DW/dashboard đều đã chạy thật và xác
+    nhận đúng, bao gồm idempotency (DDL + UPSERT + provision Superset chạy lại không
+    trùng/không lỗi), không ảnh hưởng pipeline khác (ETL/RFM/K-Means/dashboard Phase 6 hồi quy
+    PASS), không làm chậm pipeline chính (script độc lập, không nằm trong DAG Airflow). **Chưa
+    xác nhận bằng mắt trong trình duyệt** (môi trường không có browser — giống hạn chế đã có ở
+    dashboard Phase 6).
   - Phụ thuộc: Phase 5 hoàn tất (đáp ứng)
 
 - [ ] **8.2 Decision Tree dự đoán phân khúc/khả năng rời bỏ**

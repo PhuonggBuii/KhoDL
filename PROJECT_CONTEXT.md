@@ -66,7 +66,7 @@ trường Python quản lý bằng `uv` (xem `pyproject.toml`, `uv.lock`, `.venv
 | 5.5 Nạp cluster vào DW | **DONE** (2026-10-24) | Bảng `customer_segment` (`sql/003_customer_segment.sql`) + UPSERT (`scripts/mining/load_segments_dw.py`), 5.853 dòng, 0 orphan FK, chạy lại idempotent — xem mục 3.2b |
 | 6. Dashboard Superset | **DONE qua API (2026-10-24)** | Database+5 dataset+6 chart+1 dashboard tạo qua REST API, đối chiếu khớp DW; **chưa xác nhận bằng mắt trong browser** (môi trường không có browser) — xem `docs/06_superset_dashboard.md` |
 | 7. Kiểm thử tổng/báo cáo/demo | **Phần lớn xong** | `docs/00_bao_cao_do_an.md` đã tổng hợp báo cáo+demo+Q&A+checklist; còn thiếu: xác nhận browser, tên thật thành viên, chữ ký nhóm 0.3 |
-| 8.1 Apriori (Market Basket Analysis) | **DONE đầy đủ, kiểm thử thật 2026-10-28** (thuật toán + CSV + tích hợp DW, cả `--source dw` lẫn `sql/004`/`load_apriori_dw.py`) | Xem mục 3.4 |
+| 8.1 Apriori (Market Basket Analysis) | **DONE đầy đủ, kiểm thử thật 2026-10-28** (thuật toán + CSV + tích hợp DW + dashboard Superset riêng) | Xem mục 3.4 |
 | 8.2 Decision Tree | **TODO** (chưa làm) | Chỉ làm nếu còn thời gian |
 
 ---
@@ -252,7 +252,7 @@ trường Python quản lý bằng `uv` (xem `pyproject.toml`, `uv.lock`, `.venv
   không ảnh hưởng, không `docker compose down -v`.
 - Chi tiết đầy đủ: `docs/PROJECT_GAP_ANALYSIS.md` mục 12.
 
-### 3.4 Phase 8.1 — Market Basket Analysis / Apriori (DONE đầy đủ, kiểm thử thật 2026-10-28 — thuật toán+CSV+tích hợp DW)
+### 3.4 Phase 8.1 — Market Basket Analysis / Apriori (DONE đầy đủ, kiểm thử thật 2026-10-28 — thuật toán+CSV+tích hợp DW+dashboard Superset)
 - File mới: [`scripts/mining/apriori_mba.py`](scripts/mining/apriori_mba.py) (thuật toán Apriori
   tự cài đặt bằng Python/Pandas thuần — KHÔNG dùng `mlxtend`/thư viện ngoài, KHÔNG one-hot
   encoding — + CLI độc lập, hỗ trợ `--source dw|csv`),
@@ -285,6 +285,20 @@ trường Python quản lý bằng `uv` (xem `pyproject.toml`, `uv.lock`, `.venv
   - Container `postgres-dw` dùng để kiểm thử đã `docker compose stop` sau khi xong (không có
     container nào khác của dự án đang chạy trước đó nên không ảnh hưởng gì).
   - Chi tiết đầy đủ, bao gồm số liệu cụ thể từng bước: `docs/08_apriori_mba.md` mục 8.
+- **Cập nhật 2026-10-28 (lượt kiểm thử thứ 3) — Dashboard Superset riêng cho Apriori:** mở rộng
+  [`scripts/superset/provision_superset.py`](scripts/superset/provision_superset.py) (tái dùng
+  connection `Retail DW` có sẵn, thêm dataset `market_basket_rules` + 5 chart + dashboard mới
+  "Apriori - Luat ket hop san pham", **không sửa/không xóa** dashboard Phase 6) và
+  [`scripts/superset/verify_charts.py`](scripts/superset/verify_charts.py) (thêm
+  `query_mode=aggregate` + `echarts_timeseries_scatter`). Chạy thật 2 lần: lần 2 idempotent
+  (toàn bộ PUT, không tạo trùng — xác nhận `GET` API vẫn đúng 2 dashboard/11 chart/6 dataset).
+  Cả 11 chart (6 cũ + 5 mới) xác minh qua `/api/v1/chart/data` khớp số liệu thật; dashboard
+  Phase 6 xác nhận không đổi. Chart Scatter (`echarts_timeseries_scatter`, X=`support`,
+  Y=AVG(`confidence`)) hoạt động đúng nhờ tính năng "Generic X-Axis" của Superset — đã xác nhận
+  key viz này tồn tại thật trong bundle JS của container (không phải tự đặt); **không mã hóa
+  `lift` bằng bubble-size** vì Superset 4.1.1 không có viz_type nào hỗ trợ 3 chiều liên tục độc
+  lập cùng lúc (đã kiểm tra thực tế). **Chưa xác nhận bằng mắt trong trình duyệt** (môi trường
+  không có browser). Chi tiết đầy đủ: `docs/08_apriori_mba.md` mục 11.
 - Không thêm dependency (`mlxtend`/`efficient-apriori`/`apyori` đã kiểm tra không có sẵn, quyết
   định tự cài đặt thay vì `uv add` thêm thư viện).
 

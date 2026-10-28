@@ -269,3 +269,63 @@ uv run scripts/mining/load_apriori_dw.py
 toàn bộ giá trị mặc định `min_support=0.02, min_confidence=0.30, max_len=2`) trên
 `datalake/processed/2026-10-23/fact_sales.csv` (hoặc thư mục `datalake/processed/<ngày>/` mới
 nhất nếu đã chạy lại Transform) sẽ cho đúng 323 frequent itemset / 101 luật như mục 6.
+
+## 11. Dashboard Superset — ĐÃ TẠO và xác nhận qua API (2026-10-28, lượt kiểm thử thứ 3)
+
+Dashboard **riêng**, tách biệt với dashboard "Online Retail II - Tong quan kinh doanh" (Phase
+6) — không sửa/không xóa dashboard đó. Tạo qua REST API bằng
+[`scripts/superset/provision_superset.py`](../scripts/superset/provision_superset.py) (đã mở
+rộng, tái sử dụng connection `Retail DW` + pattern idempotent có sẵn), kiểm thử bằng
+[`scripts/superset/verify_charts.py`](../scripts/superset/verify_charts.py) (đã mở rộng để hỗ
+trợ `query_mode=aggregate` và `echarts_timeseries_scatter`).
+
+**Dataset:** đăng ký trực tiếp bảng `market_basket_rules` (không qua view trung gian — bảng đã
+có đủ cột cần thiết).
+
+**5 chart (tất cả đã xác minh qua `/api/v1/chart/data` thật, số liệu khớp `psql` trực tiếp):**
+
+| # | Tên chart | Loại (`viz_type`) | Nội dung | Kết quả xác minh thật |
+|---|---|---|---|---|
+| 1 | Apriori - KPI tong quan | `table` (aggregate) | Tổng số luật, số luật lift>1, confidence TB, lift TB | `101 / 101 / 0,4856 / 9,179` |
+| 2 | Apriori - Top 10 luat theo Lift | `table` (raw, sort theo `lift` giảm dần) | antecedent/consequent/support/confidence/lift | Top 1: `22697→22698`, lift 24,44 — khớp mục 6 |
+| 3 | Apriori - Top 10 luat theo Confidence | `table` (raw, sort theo `confidence` giảm dần) | Như trên | Top 1: `22698→22697`, confidence 0,836 |
+| 4 | Apriori - Scatter Support vs Confidence | `echarts_timeseries_scatter` | X=`support` (Generic X-Axis, không phải cột thời gian), Y=AVG(`confidence`) | 54 điểm (xem ghi chú dưới) |
+| 5 | Apriori - Bang chi tiet luat ket hop | `table` (raw, sort theo `lift` giảm dần) | Toàn bộ 5 cột, `row_limit=200` | **101/101 dòng**, đúng tổng số luật |
+
+**Ghi chú thiết kế chart Scatter:** Superset 4.1.1 (bản đang dùng) **không có viz_type nào hỗ
+trợ đồng thời 3 chiều liên tục độc lập** (X, Y, kích thước bubble theo `lift`) — đã kiểm tra
+thực tế, không giả định. `echarts_timeseries_scatter` thuộc họ "timeseries" của Superset: trục X
+là khóa GROUP BY (có thể là cột bất kỳ nhờ tính năng "Generic X-Axis", không bắt buộc cột thời
+gian — đã xác minh hoạt động đúng qua `/api/v1/chart/data`), (các) metric là trục Y, **không có
+tham số bubble-size cho chiều thứ 3**. Vì vậy:
+- Chart dùng X=`support`, Y=`AVG(confidence)` — đúng yêu cầu "support so với confidence".
+- `lift` **không** được mã hóa trực quan trong chart này (đã thử nhiều phương án, không có dạng
+  nào trong bản Superset hiện tại hỗ trợ cả 3 chiều cùng lúc) — nhưng vẫn xem được đầy đủ qua
+  chart #1 (KPI, lift trung bình) và chart #2/#5 (giá trị lift cụ thể từng luật).
+- **54 điểm thay vì 101:** một vài luật có `support` trùng giá trị sau khi làm tròn 6 chữ số
+  thập phân (`NUMERIC(8,6)`) — các luật đó được Superset GROUP BY gộp lại, hiển thị
+  `AVG(confidence)` tại điểm X chung đó (tính đúng theo công thức, không bịa số liệu, nhưng mất
+  một phần độ chi tiết so với xem từng luật riêng lẻ — bù lại bằng chart #5 "Bảng chi tiết").
+- Đã xác nhận `"echarts_timeseries_scatter"` là key viz **thật sự tồn tại** trong bundle JS của
+  Superset image đang chạy (`grep` thấy trong
+  `/app/superset/static/assets/8986.*.entry.js` bên trong container) — không phải key tự đặt.
+
+**Idempotency đã xác nhận thật:** chạy `provision_superset.py` 2 lần liên tiếp → lần 2 toàn bộ
+in `Da cap nhat ...` (PUT, không POST mới); `GET /api/v1/dashboard`, `/api/v1/chart`,
+`/api/v1/dataset` sau 2 lần chạy vẫn đúng **2 dashboard, 11 chart (6 cũ + 5 mới), 6 dataset (5
+cũ + 1 mới)** — không trùng lặp. Dashboard "Online Retail II - Tong quan kinh doanh" (Phase 6)
+xác nhận **không đổi** (vẫn đúng 6 chart cũ, không bị thêm/mất chart nào).
+
+**Chưa kiểm thử (cần mở giao diện thủ công):** toàn bộ xác minh ở trên qua REST API
+(`/api/v1/chart/data`, không phải qua UI) — môi trường phát triển **không có trình duyệt**
+(giống hạn chế đã ghi nhận cho dashboard Phase 6, xem `docs/06_superset_dashboard.md` mục 6).
+**Chưa xác nhận bằng mắt** cách dashboard/chart hiển thị thực tế trong UI (bố cục, màu sắc, chú
+giải trục, tooltip) — đặc biệt là chart Scatter vì đây là viz_type phức tạp nhất. Người dùng cần
+mở `http://localhost:8088/superset/dashboard/2/` để tự kiểm tra bằng mắt trước khi dùng cho báo
+cáo/demo chính thức.
+
+**Lệnh chạy:**
+```bash
+uv run scripts/superset/provision_superset.py   # tao/cap nhat ca 2 dashboard, idempotent
+uv run scripts/superset/verify_charts.py        # doi chieu toan bo 11 chart voi du lieu that
+```

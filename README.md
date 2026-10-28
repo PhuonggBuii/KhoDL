@@ -10,7 +10,8 @@
 > `customer_segment` = **5.853 khách hàng**) → Superset Dashboard (6 chart, 2 bộ lọc, kết nối
 > thật tới Data Warehouse). **Phase 7 (kiểm thử tổng/báo cáo/demo) đang hoàn thiện. Phase 8.1
 > (Market Basket Analysis / Apriori) đã hoàn thành và kiểm thử thật** (thuật toán tự cài đặt +
-> CSV + tích hợp DW `market_basket_rules`, xem mục E bước 6); **Phase 8.2 (Decision Tree)**
+> CSV + tích hợp DW `market_basket_rules` + dashboard Superset riêng, xem mục E bước 6);
+> **Phase 8.2 (Decision Tree)**
 > vẫn là mở rộng tùy chọn, chưa làm. Chi tiết đầy đủ, bằng chứng kiểm
 > thử, quyết định kỹ thuật: xem [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md),
 > [`PROJECT_CHECKLIST.md`](PROJECT_CHECKLIST.md), [`docs/PROJECT_GAP_ANALYSIS.md`](docs/PROJECT_GAP_ANALYSIS.md)
@@ -332,9 +333,33 @@ uv run scripts/mining/test_apriori_mba.py -v
 Kết quả mong đợi: `Ran 19 tests ... OK`. Nếu có `FAIL`/`ERROR`, kiểm tra lại
 `scripts/mining/apriori_mba.py` chưa bị sửa sai logic.
 
+**Dashboard Superset riêng cho Apriori** (sau khi đã nạp `market_basket_rules`, xem bước ở trên,
+và Superset đang `healthy`) — tạo/cập nhật qua cùng script provision đã dùng cho dashboard chính,
+**idempotent, không đụng tới dashboard "Online Retail II - Tong quan kinh doanh" đã có**:
+```bash
+uv run scripts/superset/provision_superset.py   # tao ca 2 dashboard (dashboard chinh + Apriori)
+uv run scripts/superset/verify_charts.py        # doi chieu toan bo chart (ca cu lan moi) voi du lieu that
+```
+→ Dashboard **"Apriori - Luat ket hop san pham"**: `http://localhost:8088/superset/dashboard/2/`
+(id có thể khác nếu đã có dashboard khác được tạo trước — script in ra URL chính xác sau khi
+chạy). **5 chart** (đã xác minh thật qua `/api/v1/chart/data`, số liệu khớp `psql`):
+
+| Chart | Loại | Nội dung |
+|---|---|---|
+| Apriori - KPI tong quan | Bảng (aggregate) | Tổng số luật, số luật `lift>1`, confidence/lift trung bình |
+| Apriori - Top 10 luat theo Lift | Bảng | 10 luật có `lift` cao nhất |
+| Apriori - Top 10 luat theo Confidence | Bảng | 10 luật có `confidence` cao nhất |
+| Apriori - Scatter Support vs Confidence | Scatter (`echarts_timeseries_scatter`) | Phân bố support × confidence trung bình |
+| Apriori - Bang chi tiet luat ket hop | Bảng | Toàn bộ luật, sắp xếp theo `lift` giảm dần |
+
+**Lưu ý đã biết (xem đầy đủ ở `docs/08_apriori_mba.md` mục 11):** chart Scatter không mã hóa
+`lift` bằng màu/kích thước vì Superset 4.1.1 không hỗ trợ bubble-size cho viz_type này; dashboard
+đã xác minh qua API thật nhưng **chưa mở trình duyệt để xem bằng mắt** (môi trường phát triển
+không có browser — giống hạn chế đã có ở dashboard chính, xem `docs/06_superset_dashboard.md`).
+
 Chi tiết cách chọn ngưỡng `min_support`/`min_confidence`, toàn bộ số liệu kiểm thử (gồm cả lượt
-kiểm thử DW thật với Docker), thiết kế bảng `market_basket_rules`, và giới hạn đã biết: xem
-[`docs/08_apriori_mba.md`](docs/08_apriori_mba.md).
+kiểm thử DW thật với Docker và dashboard Superset), thiết kế bảng `market_basket_rules`, và giới
+hạn đã biết: xem [`docs/08_apriori_mba.md`](docs/08_apriori_mba.md).
 
 ### Các lần chạy sau (đã có `.env`, dataset, Star Schema)
 
@@ -438,6 +463,7 @@ liệu đã nạp trong `postgres-source`/`postgres-dw`/Airflow/Superset, phải
 | `scripts/mining/apriori_mba.py --source dw` lỗi `KeyError: 'PG_DW_PORT'`/`connection refused` | Chạy `--source dw` nhưng Docker/`postgres-dw` chưa chạy hoặc chưa Load dữ liệu | Dùng `--source csv` nếu không cần Docker (đọc `datalake/processed/<ngày>/`), hoặc chạy đủ bước E.1/E.3/E.4 trước khi dùng `--source dw` |
 | `scripts/mining/apriori_mba.py --source csv` lỗi `Khong tim thay thu muc nao co fact_sales.csv` | Chưa chạy Transform lần nào (`datalake/processed/` rỗng) | Chạy `uv run scripts/transform/transform.py` trước (xem mục "Chạy pipeline trực tiếp trên host"), hoặc dùng `--input <thư_mục>` trỏ tới `datalake/processed/<ngày>/` có sẵn |
 | `load_apriori_dw.py` báo `Chua co .../apriori_association_rules.csv` | Chưa chạy `apriori_mba.py` lần nào | Chạy `uv run scripts/mining/apriori_mba.py --source csv` (hoặc `--source dw`) trước |
+| `provision_superset.py` lỗi khi tạo dataset/chart `market_basket_rules`/`Apriori - ...` | Chưa chạy `sql/004_market_basket_rules.sql` + `load_apriori_dw.py` trước (bảng chưa tồn tại hoặc rỗng) | Chạy đủ 3 lệnh ở mục E bước 6 ("kiến trúc chính thức qua DW") trước khi chạy `provision_superset.py` |
 
 ---
 

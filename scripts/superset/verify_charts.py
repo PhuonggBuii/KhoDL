@@ -51,12 +51,36 @@ def query_context_for(chart: dict) -> dict:
             "row_limit": params.get("row_limit", 100),
         }
     elif viz_type == "table":
+        if params.get("query_mode") == "aggregate":
+            # Phase 8.1 - chart KPI (vd Apriori): khong co all_columns, dung
+            # metrics + groupby (co the rong) nhu 1 truy van aggregate thuan.
+            q = {
+                "columns": params.get("groupby", []),
+                "metrics": params["metrics"],
+                "groupby": params.get("groupby", []),
+                "orderby": [],
+                "row_limit": params.get("row_limit", 100),
+            }
+        else:
+            order_by_cols = params.get("order_by_cols", [])
+            orderby = [json.loads(col) for col in order_by_cols]
+            q = {
+                "columns": params["all_columns"],
+                "metrics": [],
+                "groupby": [],
+                "orderby": orderby,
+                "row_limit": params.get("row_limit", 100),
+            }
+    elif viz_type == "echarts_timeseries_scatter":
+        # Phase 8.1 - "Generic X-Axis": x_axis co the la cot bat ky (khong bat
+        # buoc thoi gian) - Superset GROUP BY chinh cot do, metrics la Y.
         q = {
-            "columns": params["all_columns"],
-            "metrics": [],
-            "groupby": [],
+            "columns": [params["x_axis"]],
+            "metrics": params["metrics"],
+            "groupby": params.get("groupby", []),
             "orderby": [],
-            "row_limit": params.get("row_limit", 100),
+            "row_limit": params.get("row_limit", 1000),
+            "is_timeseries": False,
         }
     else:
         raise ValueError(f"Chua ho tro viz_type {viz_type} trong script kiem thu nay")
